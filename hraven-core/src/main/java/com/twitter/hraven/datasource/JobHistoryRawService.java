@@ -538,7 +538,7 @@ public class JobHistoryRawService {
     if (value == null) {
       throw new IllegalArgumentException("Cannot create InputStream from null");
     }
-
+    
     KeyValue keyValue =
         value.getColumnLatest(Constants.RAW_FAM_BYTES, Constants.JOBHISTORY_COL_BYTES);
 
@@ -550,5 +550,9 @@ public class JobHistoryRawService {
 
     byte[] jobHistoryRaw = keyValue.getValue();
     return jobHistoryRaw;
+  }
+
+  public HTable getTable() {
+	return rawTable;
   }
 }

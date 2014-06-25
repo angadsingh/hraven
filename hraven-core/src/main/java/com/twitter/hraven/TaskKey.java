@@ -15,9 +15,17 @@ limitations under the License.
 */
 package com.twitter.hraven;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+
 import org.apache.commons.lang.builder.CompareToBuilder;
 import org.apache.commons.lang.builder.HashCodeBuilder;
-
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.WritableComparable;
+import org.codehaus.jackson.annotate.JsonCreator;
+import org.codehaus.jackson.annotate.JsonProperty;
+import org.codehaus.jackson.map.annotate.JsonSerialize;
 
 /**
  * Represents the row key for an individual job task.  This key shares all the
@@ -26,10 +34,14 @@ import org.apache.commons.lang.builder.HashCodeBuilder;
  *   (m|r)_tasknumber(_attemptnumber)?
  * </pre>
  */
-public class TaskKey extends JobKey implements Comparable<Object> {
+@JsonSerialize(
+    include=JsonSerialize.Inclusion.NON_NULL
+  )
+public class TaskKey extends JobKey implements WritableComparable<Object> {
   private String taskId;
 
-  public TaskKey(JobKey jobKey, String taskId) {
+  @JsonCreator
+  public TaskKey(@JsonProperty("jobId") JobKey jobKey, @JsonProperty("taskId") String taskId) {
     super(jobKey.getQualifiedJobId(), jobKey.getUserName(), jobKey.getAppId(),
         jobKey.getRunId());
     this.taskId = taskId;
@@ -40,8 +52,7 @@ public class TaskKey extends JobKey implements Comparable<Object> {
   }
 
   public String toString() {
-    return new StringBuilder(super.toString())
-        .append(Constants.SEP).append(taskId).toString();
+    return super.toString() + Constants.SEP + getTaskId();
   }
 
   /**
@@ -76,5 +87,17 @@ public class TaskKey extends JobKey implements Comparable<Object> {
 	  return new HashCodeBuilder().appendSuper(super.hashCode())
           .append(this.taskId)
           .toHashCode();
+  }
+  
+  @Override
+  public void write(DataOutput out) throws IOException {
+    super.write(out);
+    Text.writeString(out, this.taskId);
+  }
+
+  @Override
+  public void readFields(DataInput in) throws IOException {
+    super.readFields(in);
+    this.taskId = Text.readString(in);
   }
 }

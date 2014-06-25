@@ -21,20 +21,16 @@
 #   [schedulerpoolname] [historyprocessingdir] [cluster] [threads] [batchsize] [machinetype] [costfile]
 # a sample cost file can be found in the conf dir as sampleCostDetails.properties
 
-if [ $# -ne 8 ]
+if [ $# -ne 11 ]
 then
-  echo "Usage: `basename $0` [hbaseconfdir] [schedulerpoolname] [historyprocessingdir] [cluster] [threads] [batchsize] [machinetype] [costfile]"
+  echo "Usage: `basename $0` [hbaseconfdir] [schedulerpoolname] [historyprocessingdir] [cluster] [threads] [batchsize] [machinetype] [sinks] [costfilehdfspath] [taskhistoryprocessing] [jobfileprocessorconf]"
   exit 1
 fi
 
-home=$(dirname $0)
-source $home/../../conf/hraven-env.sh
-source $home/pidfiles.sh
+source $(dirname $0)/hraven-etl-env.sh
+
 myscriptname=$(basename "$0" .sh)
-hravenEtlJar=$home/../../lib/hraven-etl.jar
-LIBJARS=$home/../../lib/hraven-core.jar
 stopfile=$HRAVEN_PID_DIR/$myscriptname.stop
-export HADOOP_CLASSPATH=$(ls $home/../../lib/commons-lang-*.jar)
 
 if [ -f $stopfile ]; then
   echo "Error: not allowed to run. Remove $stopfile continue." 1>&2
@@ -44,5 +40,5 @@ fi
 create_pidfile $HRAVEN_PID_DIR
 trap 'cleanup_pidfile_and_exit $HRAVEN_PID_DIR' INT TERM EXIT
 
-hadoop --config $1 jar $hravenEtlJar com.twitter.hraven.etl.JobFileProcessor -libjars=$LIBJARS -Dmapred.fairscheduler.pool=$2 -d -p $3 -c $4 -t $5 -b $6 -m $7 -z $8
+hadoop --config $1 jar $hravenEtlJar com.twitter.hraven.etl.JobFileProcessor -libjars=$LIBJARS -Dmapred.fairscheduler.pool=$2 $jobfileprocessorconf -d -p $3 -c $4 -t $5 -b $6 -m $7 -s $8 -zf $9 -tt $10
 

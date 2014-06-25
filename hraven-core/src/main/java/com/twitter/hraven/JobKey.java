@@ -15,8 +15,13 @@ limitations under the License.
 */
 package com.twitter.hraven;
 
+import java.io.DataInput;
+import java.io.DataOutput;
+import java.io.IOException;
+
 import org.apache.commons.lang.builder.CompareToBuilder;
 import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.hadoop.io.WritableComparable;
 import org.codehaus.jackson.annotate.JsonCreator;
 import org.codehaus.jackson.annotate.JsonProperty;
 
@@ -24,7 +29,7 @@ import org.codehaus.jackson.annotate.JsonProperty;
  * Represents the row key for a given job. Row keys are stored as: username !
  * appid ! version ! runid ! jobid
  */
-public class JobKey extends FlowKey implements Comparable<Object>{
+public class JobKey extends FlowKey implements WritableComparable<Object>{
 
   /**
    * Fully qualified cluster + parsed job identifier
@@ -33,7 +38,7 @@ public class JobKey extends FlowKey implements Comparable<Object>{
 
   /**
    * Constructor.
-   * 
+   *
    * @param cluster
    *          the Hadoop cluster on which the job ran.
    * @param userName
@@ -77,7 +82,7 @@ public class JobKey extends FlowKey implements Comparable<Object>{
 
   /**
    * Constructor.
-   * 
+   *
    * @param jobDesc
    *          from which to construct this JobKey.
    */
@@ -102,15 +107,12 @@ public class JobKey extends FlowKey implements Comparable<Object>{
 
   /*
    * (non-Javadoc)
-   * 
+   *
    * @see java.lang.Object#toString()
    */
   public String toString() {
-    return getCluster() + Constants.SEP + this.userName + Constants.SEP
-        + this.appId + Constants.SEP + this.getRunId()
-        + Constants.SEP + this.jobId.getJobIdString();
+    return super.toString() + Constants.SEP + this.jobId.getJobIdString();
   }
-
   /**
    * Compares two JobKey QualifiedJobId
    *
@@ -143,6 +145,18 @@ public class JobKey extends FlowKey implements Comparable<Object>{
       return new HashCodeBuilder().appendSuper(super.hashCode())
           .append(this.jobId)
           .toHashCode();
+  }
+
+  @Override
+  public void write(DataOutput out) throws IOException {
+    super.write(out);
+    this.jobId.write(out);
+  }
+
+  @Override
+  public void readFields(DataInput in) throws IOException {
+    super.readFields(in);
+    this.jobId.readFields(in);
   }
 
 }

@@ -51,7 +51,7 @@ public class FileLister {
    *
    */
   private static void traverseDirs(List<FileStatus> fileStatusesList, FileSystem hdfs,
-      Path inputPath, JobFileModifiedRangePathFilter jobFileModifiedRangePathFilter)
+      Path inputPath, JobFileModifiedRangeSubstringPathFilter jobFileModifiedRangePathFilter)
           throws IOException
   {
     // get all the files and dirs in the current dir
@@ -83,7 +83,7 @@ public class FileLister {
    * @throws IOException
    */
   public static FileStatus[] listFiles (boolean recurse, FileSystem hdfs, Path inputPath,
-      JobFileModifiedRangePathFilter jobFileModifiedRangePathFilter) throws IOException
+      JobFileModifiedRangeSubstringPathFilter jobFileModifiedRangePathFilter) throws IOException
   {
     if (recurse) {
       List<FileStatus> fileStatusesList = new ArrayList<FileStatus>();
@@ -113,21 +113,25 @@ public class FileLister {
    * @throws IOException
    */
   public static FileStatus[] getListFilesToProcess(long maxFileSize, boolean recurse,
-      FileSystem hdfs, Path inputPath, JobFileModifiedRangePathFilter pathFilter)
+      FileSystem hdfs, Path inputPath, JobFileModifiedRangeSubstringPathFilter pathFilter)
       throws IOException {
 
     LOG.info(" in getListFilesToProcess maxFileSize=" + maxFileSize
         + " inputPath= " + inputPath.toUri());
-    FileStatus[] origList = listFiles(recurse, hdfs, inputPath, pathFilter);
+    //Instead of getting a base path and recursing, we insist on getting a path pattern
+    //and using globStatus to return all files instead, which is much faster than the recursive method call:
+    FileStatus[] origList = hdfs.globStatus(inputPath, pathFilter);
     if (origList == null) {
       LOG.info(" No files found, orig list returning 0");
       return new FileStatus[0];
     }
-    return pruneFileListBySize(maxFileSize, origList, hdfs, inputPath);
+    return pruneFileList(maxFileSize, origList);
    }
 
   /**
    * prunes the given list/array of files based on their sizes
+   * also prunes orphan job conf xml files which do not have
+   * corresponding history files
    *
    * @param maxFileSize -max #bytes to be stored in an hbase cell
    * @param origList - input list of files to be processed
@@ -135,20 +139,36 @@ public class FileLister {
    * @param inputPath - root dir of the path containing history files
    * @return - pruned array of FileStatus of files to be processed
    */
-  static FileStatus[] pruneFileListBySize(long maxFileSize, FileStatus[] origList, FileSystem hdfs,
-      Path inputPath) {
-    LOG.info("Pruning orig list  of size " + origList.length + " for source" + inputPath.toUri());
+  static FileStatus[] pruneFileList(long maxFileSize, FileStatus[] origList) {
+    LOG.info("Pruning orig list of size " + origList.length);
 
     long fileSize = 0L;
+    
     List<FileStatus> prunedFileList = new ArrayList<FileStatus>();
 
     Set<String> toBeRemovedJobId = new HashSet<String>();
+    Set<String> historyFileJobIds = new HashSet<String>();
+    
     for (int i = 0; i < origList.length; i++) {
       fileSize = origList[i].getLen();
 
       // check if hbase can store this file if yes, consider it for processing
       if (fileSize <= maxFileSize) {
         prunedFileList.add(origList[i]);
+        
+        // Maintain a list of history file jobIds to prune orphan xml files
+        // which do not have a corresponding history file. This is required for
+        // the path exclusion and inclusion filters to work properly,
+        // as exclusion filters do not filter on job conf files, resulting
+        // in a lot of orphan job conf files being loaded.
+        JobFile jFile = getJobFileFromPath(origList[i].getPath());
+        if (jFile != null) {
+          if (jFile.isJobHistoryFile()) {
+            String jobId = jFile.getJobid();
+            if (jobId != null)
+              historyFileJobIds.add(jobId);
+          }  
+        }
       } else {
         Path hugeFile = origList[i].getPath();
         LOG.info("In getListFilesToProcess filesize " + fileSize + " has exceeded maxFileSize "
@@ -158,6 +178,7 @@ public class FileLister {
         toBeRemovedJobId.add(getJobIdFromPath(hugeFile));
       }
     }
+    
     if (prunedFileList.size() == 0) {
       LOG.info("Found no files worth processing. Returning 0 sized array");
       return new FileStatus[0];
@@ -166,13 +187,12 @@ public class FileLister {
     String jobId = null;
     ListIterator<FileStatus> it = prunedFileList.listIterator();
     while (it.hasNext()) {
-      if (toBeRemovedJobId.size() == 0) {
-        // no files to remove
-        break;
-      }
       Path curFile = it.next().getPath();
       jobId = getJobIdFromPath(curFile);
-      if (toBeRemovedJobId.contains(jobId)) {
+      
+      //Remove job if jobId found in toBeRemovedJobIds (for which either file was 'huge')
+      //or if this file did not have corresponding history file to go with it
+      if (toBeRemovedJobId.contains(jobId) || !historyFileJobIds.contains(jobId)) {
         LOG.info("Removing from prunedList " + curFile.toUri());
         it.remove();
         /*
@@ -199,5 +219,10 @@ public class FileLister {
       throw new ProcessingException("job id is null for " + aPath.toUri());
     }
     return jobId;
+  }
+  
+  static JobFile getJobFileFromPath(Path aPath) {
+    String fileName = aPath.getName();
+    return new JobFile(fileName);
   }
 }

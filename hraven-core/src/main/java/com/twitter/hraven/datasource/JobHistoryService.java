@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 
 import com.google.common.base.Stopwatch;
+import com.google.common.util.concurrent.AtomicDouble;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -35,13 +36,16 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.RegexStringComparator;
 import org.apache.hadoop.hbase.filter.CompareFilter;
 import org.apache.hadoop.hbase.filter.Filter;
 import org.apache.hadoop.hbase.filter.FilterList;
 import org.apache.hadoop.hbase.filter.PrefixFilter;
+import org.apache.hadoop.hbase.filter.QualifierFilter;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
 import org.apache.hadoop.hbase.filter.WhileMatchFilter;
 import org.apache.hadoop.hbase.util.Bytes;
+
 import com.twitter.hraven.*;
 import com.twitter.hraven.util.ByteUtil;
 import com.twitter.hraven.util.HadoopConfUtil;
@@ -367,9 +371,15 @@ public class JobHistoryService {
               .toBytes(version)));
     }
 
+    // filter out all config columns except the queue name
+    filters.addFilter(new QualifierFilter(
+      CompareFilter.CompareOp.NOT_EQUAL,
+        new RegexStringComparator(
+          "^c\\!((?!" + Constants.HRAVEN_QUEUE + ").)*$")));
+
     scan.setFilter(filters);
 
-    LOG.info("scan : " + scan.toJSON());
+    LOG.info("scan : \n " + scan.toJSON() + " \n");
     return createFromResults(scan, false, limit);
   }
 
@@ -436,6 +446,7 @@ public class JobHistoryService {
       int rowCount = 0;
       long colCount = 0;
       long resultSize = 0;
+      int jobCount = 0;
       scanner = historyTable.getScanner(scan);
       Flow currentFlow = null;
       for (Result result : scanner) {
@@ -458,15 +469,21 @@ public class JobHistoryService {
           JobDetails job = new JobDetails(currentKey);
           job.populate(result);
           currentFlow.addJob(job);
+          jobCount++;
           timerJob.stop();
         }
       }
       timer.stop();
       LOG.info("Fetched from hbase " + rowCount + " rows, " + colCount + " columns, "
-          + resultSize + " bytes ( " + resultSize / (1024 * 1024)
+          + flows.size() + " flows and " + jobCount + " jobs taking up "
+          + resultSize + " bytes ( " + (double) resultSize / (1024.0 * 1024.0)
+          + " atomic double: " + new AtomicDouble(resultSize / (1024.0 * 1024.0))
           + ") MB, in total time of " + timer + " with  " + timerJob
           + " spent inJobDetails & Flow population");
-      } finally {
+
+      // export the size of data fetched from hbase as a metric
+      HravenResponseMetrics.FLOW_HBASE_RESULT_SIZE_VALUE.set((double) (resultSize / (1024.0 * 1024.0)));
+    } finally {
       if (scanner != null) {
         scanner.close();
       }
@@ -663,8 +680,7 @@ public class JobHistoryService {
    *
    * @throws IllegalArgumentException if neither config param is found
    */
-   static void setHravenQueueNamePut(Configuration jobConf, Put jobPut,
-		   JobKey jobKey, byte[] jobConfColumnPrefix) {
+   static void setHravenQueueNameRecord(Configuration jobConf, JobHistoryRecordCollection recordCollection, JobKey jobKey) {
 
      String hRavenQueueName = HadoopConfUtil.getQueueName(jobConf);
      if (hRavenQueueName.equalsIgnoreCase(Constants.DEFAULT_VALUE_QUEUENAME)){
@@ -675,9 +691,8 @@ public class JobHistoryService {
 
      // set the "queue" property defined by hRaven
      // this makes it independent of hadoop version config parameters
-     byte[] column = Bytes.add(jobConfColumnPrefix, Constants.HRAVEN_QUEUE_BYTES);
-     jobPut.add(Constants.INFO_FAM_BYTES, column,
-    			  Bytes.toBytes(hRavenQueueName));
+	 recordCollection.add(RecordCategory.CONF_META, new RecordDataKey(
+				Constants.HRAVEN_QUEUE), hRavenQueueName);
    }
 
   /**
@@ -691,40 +706,28 @@ public class JobHistoryService {
    *          the job configuration
    * @return puts for the given job configuration
    */
-  public static List<Put> getHbasePuts(JobDesc jobDesc, Configuration jobConf) {
-    List<Put> puts = new LinkedList<Put>();
-
+  public static JobHistoryRecordCollection getConfRecord(JobDesc jobDesc, Configuration jobConf) {
     JobKey jobKey = new JobKey(jobDesc);
-    byte[] jobKeyBytes = new JobKeyConverter().toBytes(jobKey);
 
     // Add all columns to one put
-    Put jobPut = new Put(jobKeyBytes);
-    jobPut.add(Constants.INFO_FAM_BYTES, Constants.VERSION_COLUMN_BYTES,
-        Bytes.toBytes(jobDesc.getVersion()));
-    jobPut.add(Constants.INFO_FAM_BYTES, Constants.FRAMEWORK_COLUMN_BYTES,
-        Bytes.toBytes(jobDesc.getFramework().toString()));
+    JobHistoryRecordCollection recordCollection = new JobHistoryRecordCollection(jobKey);
 
-    // Avoid doing string to byte conversion inside loop.
-    byte[] jobConfColumnPrefix = Bytes.toBytes(Constants.JOB_CONF_COLUMN_PREFIX
-        + Constants.SEP);
+    recordCollection.add(RecordCategory.CONF_META, new RecordDataKey(Constants.VERSION_COLUMN),
+      jobDesc.getVersion());
+    recordCollection.add(RecordCategory.CONF_META, new RecordDataKey(Constants.FRAMEWORK_COLUMN), jobDesc
+        .getFramework().toString());
 
-    // Create puts for all the parameters in the job configuration
+    // Create records for all the parameters in the job configuration
     Iterator<Entry<String, String>> jobConfIterator = jobConf.iterator();
     while (jobConfIterator.hasNext()) {
       Entry<String, String> entry = jobConfIterator.next();
-      // Prefix the job conf entry column with an indicator to
-      byte[] column = Bytes.add(jobConfColumnPrefix,
-          Bytes.toBytes(entry.getKey()));
-      jobPut.add(Constants.INFO_FAM_BYTES, column,
-          Bytes.toBytes(entry.getValue()));
+      recordCollection.add(RecordCategory.CONF, new RecordDataKey(entry.getKey()), entry.getValue());
     }
 
     // ensure pool/queuename is set correctly
-    setHravenQueueNamePut(jobConf, jobPut, jobKey, jobConfColumnPrefix);
+    setHravenQueueNameRecord(jobConf, recordCollection, jobKey);
 
-    puts.add(jobPut);
-
-    return puts;
+    return recordCollection;
   }
 
   /**

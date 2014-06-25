@@ -16,7 +16,10 @@ limitations under the License.
 package com.twitter.hraven.rest;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -26,11 +29,24 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 
+import com.google.common.base.Predicate;
+import com.google.common.base.Stopwatch;
+import com.sun.jersey.core.util.Base64;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.client.Get;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.filter.Filter;
+import org.apache.hadoop.hbase.filter.PrefixFilter;
+import org.apache.hadoop.hbase.filter.WhileMatchFilter;
+import org.apache.hadoop.hbase.util.Bytes;
 
 import com.google.common.base.Predicate;
 import com.google.common.base.Stopwatch;
@@ -41,14 +57,19 @@ import com.twitter.hraven.Constants;
 import com.twitter.hraven.Flow;
 import com.twitter.hraven.HdfsConstants;
 import com.twitter.hraven.HdfsStats;
+import com.twitter.hraven.HravenResponseMetrics;
 import com.twitter.hraven.JobDetails;
+import com.twitter.hraven.JobKey;
+import com.twitter.hraven.TaskDetails;
 import com.twitter.hraven.datasource.AppSummaryService;
 import com.twitter.hraven.datasource.AppVersionService;
 import com.twitter.hraven.datasource.FlowKeyConverter;
 import com.twitter.hraven.datasource.HdfsStatsService;
 import com.twitter.hraven.datasource.JobHistoryService;
+import com.twitter.hraven.datasource.JobKeyConverter;
 import com.twitter.hraven.datasource.ProcessingException;
 import com.twitter.hraven.datasource.VersionInfo;
+import com.twitter.hraven.util.ByteUtil;
 
 /**
  * Main REST resource that handles binding the REST API to the JobHistoryService.
@@ -145,7 +166,34 @@ public class RestJSONResource {
       LOG.info("For job/{cluster}/{jobId} with input query:" + " job/" + cluster + SLASH + jobId
           + " No jobDetails found, but spent " + timer);
     }
-   return jobDetails;
+    // export latency metrics
+    HravenResponseMetrics.JOB_API_LATENCY_VALUE
+      .set(timer.elapsed(TimeUnit.MILLISECONDS));
+
+    return jobDetails;
+
+  }
+
+  @GET
+  @Path("tasks/{cluster}/{jobId}")
+  @Produces(MediaType.APPLICATION_JSON)
+  public List<TaskDetails> getJobTasksById(@PathParam("cluster") String cluster,
+                                           @PathParam("jobId") String jobId) throws IOException {
+    LOG.info("Fetching tasks info for jobId=" + jobId);
+    Stopwatch timer = new Stopwatch().start();
+    serializationContext.set(new SerializationContext(
+        SerializationContext.DetailLevel.EVERYTHING));
+    JobDetails jobDetails = getJobHistoryService().getJobByJobID(cluster, jobId, true);
+    timer.stop();
+    List<TaskDetails> tasks = jobDetails.getTasks();
+    if(tasks != null && !tasks.isEmpty()) {
+      LOG.info("For endpoint /tasks/" + cluster + "/" + jobId + ", fetched "
+          + tasks.size() + " tasks, spent time " + timer);
+    } else {
+      LOG.info("For endpoint /tasks/" + cluster + "/" + jobId
+          + ", found no tasks, spent time " + timer);
+    }
+    return tasks;
   }
 
   @GET
@@ -167,6 +215,10 @@ public class RestJSONResource {
       LOG.info("For jobFlow/{cluster}/{jobId} with input query: " + "jobFlow/" + cluster + SLASH
           + jobId + " No flow found, spent " + timer);
     }
+
+    // export latency metrics
+    HravenResponseMetrics.JOBFLOW_API_LATENCY_VALUE
+        .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return flow;
   }
 
@@ -222,13 +274,17 @@ public class RestJSONResource {
           + " startTime=" + startTime + " endTime=" + endTime
           + " &includeConf=" + builderIncludeConfigs + " &includeConfRegex="
           + builderIncludeConfigRegex + " fetched " + flows.size() + " flows " + " in " + timer);
-    } else {
+     } else {
       LOG.info("For flow/{cluster}/{user}/{appId}/{version} with input query: " + "flow/" + cluster
           + SLASH + user + SLASH + appId + SLASH + version + "?limit=" + limit
           + " startTime=" + startTime + " endTime=" + endTime
           + " &includeConf=" + builderIncludeConfigs + "&includeConfRegex="
           + builderIncludeConfigRegex + " No flows fetched, spent " + timer);
     }
+
+    // export latency metrics
+    HravenResponseMetrics.FLOW_VERSION_API_LATENCY_VALUE
+        .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return flows;
   }
 
@@ -251,9 +307,10 @@ public class RestJSONResource {
       configFilter = new SerializationContext.ConfigurationFilter(includeConfig);
     } else if (includeConfigRegex != null && !includeConfigRegex.isEmpty()) {
       configFilter = new SerializationContext.RegexConfigurationFilter(includeConfigRegex);
-    }
-    serializationContext.set(new SerializationContext(
+    } else {
+      serializationContext.set(new SerializationContext(
         SerializationContext.DetailLevel.EVERYTHING, configFilter));
+    }
     List<Flow> flows = getFlowList(cluster, user, appId, null, startTime, endTime, limit);
     timer.stop();
 
@@ -268,15 +325,19 @@ public class RestJSONResource {
 
     if (flows != null) {
       LOG.info("For flow/{cluster}/{user}/{appId} with input query: " + "flow/" + cluster + SLASH
-          + user + SLASH + appId + "?limit=" + limit + "&includeConf=" + builderIncludeConfigs
+          + user + SLASH + appId + "?limit=" + limit + "&startTime=" + startTime 
+          + "&endTime=" + endTime + "&includeConf=" + builderIncludeConfigs
           + "&includeConfRegex=" + builderIncludeConfigRegex + " fetched " + flows.size()
           + " flows in " + timer);
     } else {
       LOG.info("For flow/{cluster}/{user}/{appId} with input query: " + "flow/" + cluster + SLASH
           + user + SLASH + appId + "?limit=" + limit + "&includeConf=" + builderIncludeConfigs
-          + "&includeConfRegex=" + builderIncludeConfigRegex + " No flows fetched, spent " + timer);
+          + "&includeConfRegex=" + builderIncludeConfigRegex + " No flows fetched, spent "+ timer);
     }
 
+    // export latency metrics
+    HravenResponseMetrics.FLOW_API_LATENCY_VALUE
+        .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return flows;
 
   }
@@ -299,7 +360,7 @@ public class RestJSONResource {
       + appId + "?version=" + version + "&limit=" + limit
       + "&startRow=" + startRowParam + "&startTime=" + startTime + "&endTime=" + endTime
       + "&includeJobs=" + includeJobs);
- 
+
     Stopwatch timer = new Stopwatch().start();
     byte[] startRow = null;
     if (startRowParam != null) {
@@ -366,6 +427,10 @@ public class RestJSONResource {
         + appId + "?version=" + version + "&limit=" + limit + "&startRow=" + startRow
         + "&startTime=" + startTime + "&endTime=" + endTime + "&includeJobs=" + includeJobs
         + " fetched " + flows.size() + " in " + timer);
+
+    // export latency metrics
+    HravenResponseMetrics.FLOW_STATS_API_LATENCY_VALUE
+        .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return flowStatsPage;
  }
 
@@ -393,8 +458,11 @@ public class RestJSONResource {
      LOG.info("For appVersion/{cluster}/{user}/{appId}/ with input query "
        + "appVersion/" + cluster + SLASH + user + SLASH + appId
        + "?limit=" + limit
-       + " fetched #number of VersionInfo " + distinctVersions.size() + " in " + timer);
+       + " fetched #number of VersionInfo " + distinctVersions.size() + " in " );//+ timer);
 
+     // export latency metrics
+     HravenResponseMetrics.APPVERSIONS_API_LATENCY_VALUE
+       .set(timer.elapsed(TimeUnit.MILLISECONDS));
      return distinctVersions;
   }
 
@@ -486,6 +554,10 @@ public class RestJSONResource {
         }
       }
   }
+
+    // export latency metrics
+    HravenResponseMetrics.HDFS_STATS_API_LATENCY_VALUE
+      .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return hdfsStats;
   }
 
@@ -544,6 +616,9 @@ public class RestJSONResource {
           + " fetched 0 HdfsStats in " + timer);
     }
 
+    // export latency metrics
+    HravenResponseMetrics.HDFS_TIMESERIES_API_LATENCY_VALUE
+       .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return hdfsStats;
   }
 
@@ -594,8 +669,72 @@ public class RestJSONResource {
    serializationContext.set(new SerializationContext(
       SerializationContext.DetailLevel.APP_SUMMARY_STATS_NEW_JOBS_ONLY));
 
+   // export latency metrics
+   HravenResponseMetrics.NEW_JOBS_API_LATENCY_VALUE
+       .set(timer.elapsed(TimeUnit.MILLISECONDS));
     return newApps;
  }
+  
+  @GET
+  @Path("graphite/mapping/{cluster}/{user}/{appId}")
+  @Produces(MediaType.APPLICATION_JSON)
+  public Map<String, String> getGraphitAppIdMapping(@PathParam("cluster") String cluster,
+                                   @PathParam("user") String user,
+                                   @PathParam("appId") String appId,
+                                   @QueryParam("limit") int limit)
+  throws IOException {
+
+    Stopwatch timer = new Stopwatch().start();
+    Map<String,String> graphiteKeys = new HashMap<String,String>();
+    byte[] rowPrefix = ByteUtil.join(Constants.SEP_BYTES,
+      Bytes.toBytes(cluster),
+      Bytes.toBytes(user),
+      Bytes.toBytes(appId));
+    
+    Scan scan = new Scan();
+    scan.setStartRow(rowPrefix);
+    scan.setCaching(Math.min(limit, HBASE_CONF.getInt("hbase.client.scanner.caching", 100)));
+    Filter prefixFilter = new WhileMatchFilter(new PrefixFilter(rowPrefix));
+    scan.setFilter(prefixFilter);
+
+    HTable keyMappingTable = new HTable(HBASE_CONF, Constants.GRAPHITE_KEY_MAPPING_TABLE_BYTES);
+    keyMappingTable.setAutoFlush(false);
+    
+    ResultScanner scanner = keyMappingTable.getScanner(scan);
+    JobKeyConverter jobKeyConv = new JobKeyConverter();
+    
+    for (Result result : scanner) {
+      JobKey currentKey = jobKeyConv.fromBytes(result.getRow());
+      graphiteKeys.put(currentKey.toString(), Bytes.toString(result.getColumn(Constants.INFO_FAM_BYTES, Constants.GRAPHITE_KEY_MAPPING_COLUMN_BYTES).get(0).getValue()));
+      if (graphiteKeys.size() >= limit)
+        break;
+    }
+    
+    keyMappingTable.close();
+    timer.stop();
+    LOG.info("Fetched graphite key for app/{cluster=" + cluster + "}/{user=" + user + "}/{appId=" + appId + "} in " + timer);
+    return graphiteKeys;
+
+  }
+  
+  @GET
+  @Path("graphite/reversemapping/{metrixPathPrefix}")
+  @Produces(MediaType.APPLICATION_JSON)
+  public String getGraphitAppIdReverseMapping(@PathParam("metrixPathPrefix") String metrixPathPrefix,
+                                                           @QueryParam("limit") int limit)
+  throws IOException {
+
+    HTable keyMappingTable =
+        new HTable(HBASE_CONF, Constants.GRAPHITE_REVERSE_KEY_MAPPING_TABLE_BYTES);
+    keyMappingTable.setAutoFlush(false);
+    byte[] value =
+        keyMappingTable.get(new Get(Bytes.toBytes(metrixPathPrefix)))
+            .getColumn(Constants.INFO_FAM_BYTES, Constants.GRAPHITE_KEY_MAPPING_COLUMN_BYTES)
+            .get(0).getValue();
+    keyMappingTable.close();
+    byte[][] splits = ByteUtil.split(value, Constants.SEP_BYTES, 3);
+    return Bytes.toString(splits[0]) +  Constants.SEP + Bytes.toString(splits[1]) +  Constants.SEP + Bytes.toString(splits[2]);
+  }
 
   private AppSummaryService getAppSummaryService() {
     if (LOG.isDebugEnabled()) {

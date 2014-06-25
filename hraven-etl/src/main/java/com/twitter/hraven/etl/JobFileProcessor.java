@@ -18,7 +18,11 @@ package com.twitter.hraven.etl;
 import static com.twitter.hraven.etl.ProcessState.LOADED;
 import static com.twitter.hraven.etl.ProcessState.PROCESSED;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
@@ -28,6 +32,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.annotation.Nullable;
+
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.HelpFormatter;
@@ -35,6 +41,7 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -45,7 +52,9 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.mapreduce.MultiTableOutputFormat;
+import org.apache.hadoop.hbase.mapreduce.TableInputFormat;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
+import org.apache.hadoop.hbase.util.Base64;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.Tool;
@@ -53,6 +62,8 @@ import org.apache.hadoop.util.ToolRunner;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
+import com.google.common.base.Function;
+import com.google.common.collect.Collections2;
 import com.twitter.hraven.Constants;
 import com.twitter.hraven.datasource.JobHistoryRawService;
 import com.twitter.hraven.etl.ProcessRecordService;
@@ -73,6 +84,7 @@ public class JobFileProcessor extends Configured implements Tool {
       .format(new Date(System.currentTimeMillis()));
 
   private final AtomicInteger jobCounter = new AtomicInteger(0);
+  private List<Sink> sinks;
 
   /**
    * Maximum number of files to process in one batch.
@@ -119,7 +131,7 @@ public class JobFileProcessor extends Configured implements Tool {
         "r",
         "reprocess",
         false,
-        "Reprocess only those records that have been marked to be reprocessed. Otherwise process all rows indicated in the processing records, but successfully processed job files are skipped.");
+        "Process only those records that have been marked to be reprocessed. Otherwise process all rows indicated in the processing records, but successfully processed job files are skipped.");
     o.setRequired(false);
     options.addOption(o);
 
@@ -152,10 +164,8 @@ public class JobFileProcessor extends Configured implements Tool {
     // Debugging
     options.addOption("d", "debug", false, "switch on DEBUG log level");
 
-    // Cost Properties File to be copied to distributed cache
-    o = new Option("z", "costFile", true,
-      "The cost properties file on local disk");
-    o.setArgName("costfile");
+    o = new Option("zf", "costFile", true, "The cost properties file location on HDFS");
+    o.setArgName("costfile_loc");
     o.setRequired(true);
     options.addOption(o);
 
@@ -164,6 +174,18 @@ public class JobFileProcessor extends Configured implements Tool {
       "The type of machine this job ran on");
     o.setArgName("machinetype");
     o.setRequired(true);
+    options.addOption(o);
+    
+    // Sinks
+    o = new Option("s", "sinks", true, "Comma seperated list of sinks (currently supported sinks: hbase, graphite)");
+    o.setArgName("sinks");
+    o.setRequired(true);
+    options.addOption(o);
+    
+    // Toggle processing of task history
+    o = new Option("tt", "processtasks", true, "Toggle processing of task history data on/off");
+    o.setArgName("processtasks");
+    o.setRequired(false);
     options.addOption(o);
 
     CommandLineParser parser = new PosixParser();
@@ -203,6 +225,33 @@ public class JobFileProcessor extends Configured implements Tool {
     // Grab the arguments we're looking for.
     CommandLine commandLine = parseArgs(otherArgs);
 
+    if (StringUtils.isNotBlank(commandLine.getOptionValue("s"))) {
+      String[] splits = commandLine.getOptionValue("s").split(",");
+      
+      if (splits.length > 0) {
+        sinks =
+            new ArrayList<Sink>(Collections2.transform(
+              Arrays.asList(splits), new Function<String, Sink>() {
+
+                @Override
+                @Nullable
+                public Sink apply(@Nullable String input) {
+                  try {
+                    return Sink.valueOf(input);  
+                  } catch (IllegalArgumentException e) {
+                    throw new IllegalArgumentException("Sink '" + input + "' is incorrect.");
+                  }
+                }
+              }));  
+      }
+    }
+    
+    if (sinks == null) {
+      throw new IllegalArgumentException("Incorrect value for sinks. Provide a comma-seperated list of sinks");
+    }
+
+    LOG.info("send data to sink=" + this.sinks.toString());
+    		
     // Grab the cluster argument
     String cluster = commandLine.getOptionValue("c");
     LOG.info("cluster=" + cluster);
@@ -249,18 +298,15 @@ public class JobFileProcessor extends Configured implements Tool {
     }
 
     // Grab the costfile argument
-    String costFile = commandLine.getOptionValue("z");
-    LOG.info("cost properties file=" + costFile);
-    FileSystem fs = FileSystem.get(hbaseConf);
-    Path hdfsPath = new Path(Constants.COST_PROPERTIES_HDFS_DIR
-      + Constants.COST_PROPERTIES_FILENAME);
-    // upload the file to hdfs. Overwrite any existing copy.
-    fs.copyFromLocalFile(false, true, new Path(costFile), hdfsPath);
 
+    String costFilePath = commandLine.getOptionValue("zf");
+    LOG.info("cost properties file on hdfs=" + costFilePath);
+    if (costFilePath == null) costFilePath = Constants.COST_PROPERTIES_HDFS_DIR;
+    Path hdfsPath = new Path(costFilePath + Constants.COST_PROPERTIES_FILENAME);
     // add to distributed cache
     DistributedCache.addCacheFile(hdfsPath.toUri(), hbaseConf);
+    
     // Grab the machine type argument
-
     String machineType = commandLine.getOptionValue("m");
     // set it as part of conf so that the
     // hRaven job can access it in the mapper
@@ -279,6 +325,11 @@ public class JobFileProcessor extends Configured implements Tool {
     // Shove this into the jobConf so that we can get it out on the task side.
     hbaseConf.setStrings(Constants.CLUSTER_JOB_CONF_KEY, cluster);
 
+    //Whether or not to process task history data
+    if (commandLine.hasOption("tt")) {
+      hbaseConf.setStrings(Constants.JOBCONF_PROCESS_TASKHISTORY, commandLine.getOptionValue("tt"));
+    }
+    
     boolean success = false;
     if (reprocess) {
       success = reProcessRecords(hbaseConf, cluster, batchSize, threadCount);
@@ -456,7 +507,7 @@ public class JobFileProcessor extends Configured implements Tool {
       processRecords = processRecordService.getProcessRecords(cluster, LOADED,
           Integer.MAX_VALUE, processFileSubstring);
 
-      LOG.info("Processing " + processRecords.size() + " for: " + cluster);
+      LOG.info("Processing " + processRecords.size() + " processRecords for: " + cluster);
     } catch (IOException ioe) {
       caught = ioe;
     } finally {
@@ -491,7 +542,6 @@ public class JobFileProcessor extends Configured implements Tool {
     ProcessRecordService processRecordService = new ProcessRecordService(conf);
     IOException caught = null;
     try {
-
       for (ProcessRecord processRecord : processRecords) {
         // Even if we get an exception, still try to set the other records
         try {
@@ -581,6 +631,13 @@ public class JobFileProcessor extends Configured implements Tool {
 
   }
 
+  static String convertScanToString(Scan scan) throws IOException {
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    DataOutputStream dos = new DataOutputStream(out);
+    scan.write(dos);
+    return Base64.encodeBytes(out.toByteArray());
+  }
+ 
   /**
    * @param conf
    *          to use to create and run the job
@@ -603,18 +660,34 @@ public class JobFileProcessor extends Configured implements Tool {
     // Note: must be BEFORE the job construction with the new mapreduce API.
     confClone.setBoolean("mapred.map.tasks.speculative.execution", false);
 
+    //Set tmpjars for hadoop to be able to find hraven-core and other required libs
+    HadoopUtil.setTmpJars(Constants.HRAVEN_HDFS_LIB_PATH_CONF, confClone);
+        
     // Set up job
     Job job = new Job(confClone, getJobName(totalJobCount));
 
     // This is a map-only class, skip reduce step
     job.setNumReduceTasks(0);
     job.setJarByClass(JobFileProcessor.class);
+    job.setMapperClass(JobFileTableMapper.class);
+    job.setInputFormatClass(TableInputFormat.class);
+    job.setMapOutputKeyClass(JobFileTableMapper.getOutputKeyClass());
+    job.setMapOutputValueClass(JobFileTableMapper.getOutputValueClass());
+    job.getConfiguration().set(TableInputFormat.INPUT_TABLE, Constants.HISTORY_RAW_TABLE);
+    job.getConfiguration().set(TableInputFormat.SCAN,
+            convertScanToString(scan));
+    TableMapReduceUtil.addDependencyJars(job);
+    HBaseConfiguration.addHbaseResources(job.getConfiguration());
+    
+    //TODO: find a better way. reason: just so that it doesn't default to TextOutputFormat
     job.setOutputFormatClass(MultiTableOutputFormat.class);
-
-    TableMapReduceUtil.initTableMapperJob(Constants.HISTORY_RAW_TABLE, scan,
-        JobFileTableMapper.class, JobFileTableMapper.getOutputKeyClass(),
-        JobFileTableMapper.getOutputValueClass(), job);
-
+    
+    for (Sink sink : sinks) {
+      sink.configureJob(job);
+    }
+    
+    job.getConfiguration().set(Constants.JOBCONF_SINKS, StringUtils.join(sinks, ","));
+    
     return job;
   }
 
@@ -632,17 +705,11 @@ public class JobFileProcessor extends Configured implements Tool {
 
   /**
    * DoIt.
-   * 
-   * @param args
-   *          the arguments to do it with
+   * @param args the arguments to do it with
+   * @throws Exception
    */
-  public static void main(String[] args) {
-    try {
-      ToolRunner.run(new JobFileProcessor(), args);
-    } catch (Exception e) {
-      // TODO Auto-generated catch block
-      e.printStackTrace();
-    }
+  public static void main(String[] args) throws Exception {
+    ToolRunner.run(new JobFileProcessor(), args);
   }
 
 }
