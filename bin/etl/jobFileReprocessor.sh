@@ -16,18 +16,19 @@
 #
 
 # Run on the daemon node per specific cluster
-# Usage ./jobFilePreprocessor.sh [hadoopconfdir]
-#   [historyrawdir] [historyprocessingdir] [cluster] [batchsize]
+# This script runs on the HBase cluster
+# Usage ./jobFileProcessor.sh [hadoopconfdir]
+#   [schedulerpoolname] [historyprocessingdir] [cluster] [threads] [batchsize] [machinetype] [costfile]
+# a sample cost file can be found in the conf dir as sampleCostDetails.properties
 
-if [ $# -lt 9 ]
+if [ $# -lt 3 ]
 then
-  echo "Usage: `basename $0` [hadoopconfdir] [historyBasePath] [historyrawdir] [historyprocessingdir] [cluster] [batchsize] [defaultrawfilesizelimit] [[pathExclusionFilter]] [[pathInclusionFilter]]"
+  echo "Usage: `basename $0` [startDate] [endDate] [appFilter]"
   exit 1
 fi
 
 source $(dirname $0)/hraven-etl-env.sh
 
-export HADOOP_HEAPSIZE=4000
 myscriptname=$(basename "$0" .sh)
 stopfile=$HRAVEN_PID_DIR/$myscriptname.stop
 
@@ -39,4 +40,7 @@ fi
 create_pidfile $HRAVEN_PID_DIR
 trap 'cleanup_pidfile_and_exit $HRAVEN_PID_DIR' INT TERM EXIT
 
-hadoop --config $1 jar $hravenEtlJar com.twitter.hraven.etl.JobFilePreprocessor -libjars=$LIBJARS "${@:10}" -d -bi $2 -i $3 -o $4 -c $5 -b $6 -s $7 -ex $8 -ix $9
+set -xv
+
+hadoop --config $1 jar $hravenEtlJar com.twitter.hraven.etl.JobFileReprocessor -c $2 -sd $3 -ed $4 "${@:5}"
+

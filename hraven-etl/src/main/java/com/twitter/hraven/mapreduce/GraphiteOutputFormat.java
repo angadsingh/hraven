@@ -85,19 +85,29 @@ public class GraphiteOutputFormat extends OutputFormat<EnumWritable<HravenServic
     // paths, and you wouldn't want to send them to graphite)
     private String excludedComponents;
     
-    // comma seperated list of app substrings to prevent from being excluded after above filters
-    private String doNotExcludeApps;
+    // comma seperated list of app substrings to include
+    private String appInclusionFilter;
+    
+    //comma seperated list of app substrings to exclude
+    private String appExclusionFilter;
     
     private HTable keyMappingTable;
     private HTable reverseKeyMappingTable;
+
+    private String metricNamingRules;
+
+    private TaskAttemptContext context;
     
 
-    public GraphiteRecordWriter(Configuration hbaseconfig, String host, int port, String prefix, String userFilter, String queueFilter, String excludedComponents, String doNotExcludeApps) throws IOException {
+    public GraphiteRecordWriter(TaskAttemptContext context, Configuration hbaseconfig, String host, int port, String prefix, String userFilter, String queueFilter, String excludedComponents, String appInclusionFilter, String appExclusionFilter, String metricNamingRules) throws IOException {
+      this.context = context;
       this.METRIC_PREFIX = prefix;
       this.userFilter = userFilter;
       this.queueFilter = queueFilter;
       this.excludedComponents = excludedComponents;
-      this.doNotExcludeApps = doNotExcludeApps;
+      this.appInclusionFilter = appInclusionFilter;
+      this.appExclusionFilter = appExclusionFilter;
+      this.metricNamingRules = metricNamingRules;
       
       keyMappingTable = new HTable(hbaseconfig, Constants.GRAPHITE_KEY_MAPPING_TABLE_BYTES);
       keyMappingTable.setAutoFlush(false);
@@ -136,10 +146,11 @@ public class GraphiteOutputFormat extends OutputFormat<EnumWritable<HravenServic
 
       try {
         GraphiteHistoryWriter graphiteWriter =
-            new GraphiteHistoryWriter(keyMappingTable, reverseKeyMappingTable, METRIC_PREFIX, service, recordCollection, output, userFilter, queueFilter, excludedComponents, doNotExcludeApps);
+            new GraphiteHistoryWriter(context, keyMappingTable, reverseKeyMappingTable, METRIC_PREFIX, service, recordCollection, output, userFilter, queueFilter, excludedComponents, appInclusionFilter, appExclusionFilter, metricNamingRules);
         lines = graphiteWriter.write();
       } catch (Exception e) {
         LOG.error("Error generating metrics for graphite", e);
+        throw new IOException(e);
       }
 
       if (output.length() > 0) {
@@ -149,7 +160,7 @@ public class GraphiteOutputFormat extends OutputFormat<EnumWritable<HravenServic
           writer.write(output.toString());
         } catch (Exception e) {
           LOG.error("Error sending metrics to graphite", e);
-          throw new IOException("Error sending metrics", e);
+          throw new IOException(e);
         }  
       }
     }
@@ -184,14 +195,16 @@ public class GraphiteOutputFormat extends OutputFormat<EnumWritable<HravenServic
   public RecordWriter<EnumWritable<HravenService>, HravenRecord> getRecordWriter(TaskAttemptContext context)
       throws IOException, InterruptedException {
     Configuration conf = context.getConfiguration();
-    return new GraphiteRecordWriter(HBaseConfiguration.create(conf),
+    return new GraphiteRecordWriter(context, HBaseConfiguration.create(conf),
                                     conf.get(Constants.JOBCONF_GRAPHITE_HOST_KEY, Constants.GRAPHITE_DEFAULT_HOST),
                                     conf.getInt(Constants.JOBCONF_GRAPHITE_PORT_KEY, Constants.GRAPHITE_DEFAULT_PORT),
                                     conf.get(Constants.JOBCONF_GRAPHITE_PREFIX, Constants.GRAPHITE_DEFAULT_PREFIX),
                                     conf.get(Constants.JOBCONF_GRAPHITE_USER_FILTER),
                                     conf.get(Constants.JOBCONF_GRAPHITE_QUEUE_FILTER),
                                     conf.get(Constants.JOBCONF_GRAPHITE_EXCLUDED_COMPONENTS),
-                                    conf.get(Constants.JOBCONF_GRAPHITE_DONOTEXCLUDE_APPS)
+                                    conf.get(Constants.JOBCONF_GRAPHITE_INCLUDE_APPS),
+                                    conf.get(Constants.JOBCONF_GRAPHITE_EXCLUDE_APPS),
+                                    conf.get(Constants.JOBCONF_GRAPHITE_NAMING_RULE_CONFIG)
                                     );
   }
 

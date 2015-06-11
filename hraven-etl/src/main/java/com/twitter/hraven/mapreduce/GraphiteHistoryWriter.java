@@ -1,24 +1,36 @@
 package com.twitter.hraven.mapreduce;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
-import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
-import java.util.regex.Matcher;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.TaskInputOutputContext;
+import org.codehaus.jackson.JsonParseException;
+import org.codehaus.jackson.map.JsonMappingException;
+import org.codehaus.jackson.map.ObjectMapper;
+import org.codehaus.jackson.type.TypeReference;
+import org.springframework.expression.Expression;
+import org.springframework.expression.ExpressionParser;
+import org.springframework.expression.common.TemplateParserContext;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.expression.spel.support.StandardEvaluationContext;
 
-import com.kenai.jffi.Array;
 import com.twitter.hraven.Constants;
 import com.twitter.hraven.Framework;
 import com.twitter.hraven.HravenService;
@@ -35,9 +47,10 @@ public class GraphiteHistoryWriter {
 
   private static Log LOG = LogFactory.getLog(GraphiteHistoryWriter.class);
 
-  private final Pattern APPID_PATTERN_OOZIE_LAUNCHER = Pattern.compile("oozie:launcher:T=(.*):W=(.*):A=(.*):ID=(.*)");
-  private final Pattern APPID_PATTERN_OOZIE_ACTION = Pattern.compile("oozie:action:T=(.*):W=(.*):A=(.*):ID=[0-9]{7}-[0-9]{15}-oozie-oozi-W(.*)");
-  private final Pattern APPID_PATTERN_PIGJOB = Pattern.compile("PigLatin:(.*).pig");
+  private static List<NamingRule> RULE_CONFIG;
+
+  private final Pattern APPID_PATTERN_OOZIE_LAUNCHER = Pattern.compile(".*oozie:launcher:T=(.*):W=(.*):A=(.*):ID=(.*)");
+  private final Pattern APPID_PATTERN_OOZIE_ACTION = Pattern.compile(".*oozie:action:T=(.*):W=(.*):A=(.*):ID=[0-9]{7}-[0-9]{15}-oozie-oozi-W(.*)");
   private static final String GRAPHITE_KEY_FILTER = "[./\\\\\\s,]";
   private static final int PIG_ALIAS_FINGERPRINT_LENGTH = 100;
   
@@ -54,10 +67,23 @@ public class GraphiteHistoryWriter {
   private List<String> userFilter;
   private List<String> queueFilter;
   private List<String> excludedComponents;
-  private List<String> doNotExcludeApps;
+  private List<String> appInclusionFilter;
+  private List<String> appExclusionFilter;
   
   private HTable keyMappingTable;
   private HTable reverseKeyMappingTable;
+
+  private String metricNamingRuleFile;
+
+  private TaskAttemptContext taskContext;
+  
+  public enum Counters {
+    GRAPHITE_SINK,
+    APPS_FILTERED_IN,
+    APPS_FILTERED_OUT,
+    APP_EXCLUDED_COMPS,
+    METRICS_WRITTEN
+  };
 
   /**
    * Writes a single {@link JobHistoryRecord} to the specified {@link HravenService} Passes the
@@ -73,8 +99,9 @@ public class GraphiteHistoryWriter {
    * @throws InterruptedException
    */
 
-  public GraphiteHistoryWriter(HTable keyMappingTable, HTable reverseKeyMappingTable, String prefix, HravenService serviceKey,
-      JobHistoryRecordCollection recordCollection, StringBuilder sb, String userFilter, String queueFilter, String excludedComponents, String doNotExcludeApps) {
+  public GraphiteHistoryWriter(TaskAttemptContext context, HTable keyMappingTable, HTable reverseKeyMappingTable, String prefix, HravenService serviceKey,
+      JobHistoryRecordCollection recordCollection, StringBuilder sb, String userFilter, String queueFilter, String excludedComponents, String appInclusionFilter, String appExclusionFilter, String metricNamingRuleFile) {
+    this.taskContext = context;
     this.keyMappingTable = keyMappingTable;
     this.reverseKeyMappingTable = reverseKeyMappingTable;
     this.service = serviceKey;
@@ -87,77 +114,244 @@ public class GraphiteHistoryWriter {
       this.queueFilter = Arrays.asList(queueFilter.split(","));
     if (StringUtils.isNotEmpty(excludedComponents))
       this.excludedComponents = Arrays.asList(excludedComponents.split(","));
-    if (StringUtils.isNotEmpty(doNotExcludeApps))
-      this.doNotExcludeApps = Arrays.asList(doNotExcludeApps.split(","));
+    if (StringUtils.isNotEmpty(appInclusionFilter))
+      this.appInclusionFilter = Arrays.asList(appInclusionFilter.split(","));
+    if (StringUtils.isNotEmpty(appExclusionFilter))
+      this.appExclusionFilter = Arrays.asList(appExclusionFilter.split(","));
+    this.metricNamingRuleFile = metricNamingRuleFile;
   }
 
+  private boolean isAppExcluded(String appId) {
+    if (this.appExclusionFilter == null)
+      return false;
+    
+    for (String s: appExclusionFilter) {
+      if (appId.indexOf(s) != -1)
+        return true;
+    }
+    
+    return false;
+  }
+  
+  private boolean isAppIncluded(String appId) {
+    if (this.appInclusionFilter == null)
+      return true;
+    
+    for (String s: this.appInclusionFilter) {
+      if (appId.indexOf(s) != -1) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  private boolean filterApp() {
+      return ( (userFilter == null || userFilter.contains(recordCollection.getKey().getUserName()))
+              && (queueFilter == null || queueFilter.contains(
+                                              recordCollection.getValue(RecordCategory.CONF_META,
+                                              new RecordDataKey(Constants.HRAVEN_QUEUE))))
+              ) ||(isAppIncluded(recordCollection.getKey().getAppId())
+                   && !isAppExcluded(recordCollection.getKey().getAppId()));
+  }
+  
+  private Map<String, Object> getSystemTokens() {
+    return new HashMap<String, Object>() {{
+      
+        //General tokens
+        put("cluster", recordCollection.getKey().getCluster());
+        put("queue", getQueue());
+        put("user", recordCollection.getKey().getUserName());
+        put("jobId", recordCollection.getKey().getJobId().getJobIdString());
+        put("encodedRunId", Long.toString(recordCollection.getKey().getEncodedRunId()));
+        put("runId", Long.toString(recordCollection.getKey().getRunId()));
+        put("jobName", recordCollection.getKey().getAppId());
+        put("framework", getFramework().name());
+        put("status", getJobStatus());
+        put("priority", getJobPriority());
+        put("appVersion", getVersion());
+        
+        //Oozie tokens
+        put("oozieActionName", getOozieActionName());
+        put("oozieLauncherPattern", getOozieLauncherPattern());
+        put("oozieActionPattern", getOozieActionPattern());
+        
+        //Pig tokens
+        put("pigAliasFp", getPigAliasFingerprint());
+        put("pigAlias", getPigAlias());
+        put("pigFeature", getPigFeature());
+        
+    }};
+  }
+  
+  private Map<String, String> getUserTags() {
+    String confHravenMetricTags = (String)recordCollection.getValue(RecordCategory.CONF, new RecordDataKey(Constants.JOBCONF_HRAVEN_METRIC_TAGS));
+    Map<String, String> userTags = new HashMap<String, String>();
+    
+    if (confHravenMetricTags != null) {
+      for (String ele: confHravenMetricTags.split(",")) {
+        String[] tag = ele.split("=");
+        userTags.put(tag[0], tag[1]);
+      }
+    }
+    
+    return userTags;
+  }
+  
+  private List<NamingRule> getRuleConfig () throws IOException {
+    if (GraphiteHistoryWriter.RULE_CONFIG == null) {
+      String configStr = readFsFile(metricNamingRuleFile, new Configuration());
+      GraphiteHistoryWriter.RULE_CONFIG = parseRuleConfig(configStr);
+      LOG.info("Working with metric rule file: " + GraphiteHistoryWriter.RULE_CONFIG);
+    }
+    
+    return GraphiteHistoryWriter.RULE_CONFIG;
+  }
+  
+  public static String readFsFile(String fsFile, Configuration conf) throws IOException {
+    Path path = new Path(fsFile);
+    FileSystem fs = null;
+    fs = path.getFileSystem(conf);
+    BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(path)));
+    StringBuilder everything = new StringBuilder();
+    String line;
+    while( (line = br.readLine()) != null) {
+       everything.append(line);
+    }
+    return everything.toString();
+  }
+  
+  public List<NamingRule> parseRuleConfig(String configStr) throws IOException {
+    ObjectMapper mapper = new ObjectMapper();
+    
+    List<NamingRule> ruleConfig = null;
+    try {
+        ruleConfig = mapper.readValue(configStr,
+                new TypeReference<List<NamingRule>>() {});
+    } catch (JsonParseException e) {
+        LOG.error("JsonParseException while parsing: " + configStr);
+        throw new IOException("JsonParseException while parsing: " + configStr, e);
+    } catch (JsonMappingException e) {
+        LOG.error("JsonMappingException while parsing: " + configStr);
+        throw new IOException("JsonMappingException while parsing: " + configStr, e);
+    } catch (IOException e) {
+        LOG.error("IOException while parsing: " + configStr);
+        throw new IOException("IOException while parsing: " + configStr, e);
+    }
+    return ruleConfig;
+  }
+  
+  private Expression getParsedExpression(String exp, boolean template) {
+    exp = exp.replaceAll("#conf\\((.*)\\)", "#conf(#records,$1)");
+    exp = exp.replaceAll("#\\{([^.]*)\\}", "#{#sanitize($1)}");
+    
+    ExpressionParser parser = new SpelExpressionParser();
+    
+    if (template) {
+      return parser.parseExpression(exp, new TemplateParserContext());  
+    } else {
+      return parser.parseExpression(exp);
+    }
+  }
+
+  private String getMetricsPath() throws IOException {
+      String metricsPath = null;
+      
+      String defaultRule = "c:#{#cluster}.q:#{#queue}.u:#{#user}.all.s:#{#status}.j:#{#jobName}";
+      
+      StandardEvaluationContext context = new StandardEvaluationContext();
+      Map<String, Object> systemTokens = getSystemTokens();
+      Map<String, String> userTokens = getUserTags();
+      
+      try {
+        context.registerFunction("path", GraphiteHistoryWriter.class.getDeclaredMethod("getDotPath", String[].class));
+        context.registerFunction("sanitize", GraphiteHistoryWriter.class.getDeclaredMethod("sanitize",String.class));
+        context.registerFunction("conf", GraphiteHistoryWriter.class.getDeclaredMethod("getJobConfProp", new Class[] {JobHistoryRecordCollection.class, String.class}));
+      } catch (SecurityException e) {
+        LOG.error("SecurityException while adding methods to SEPL context", e);
+        throw new RuntimeException(e);
+      } catch (NoSuchMethodException e) {
+        LOG.error("NoSuchMethodException while adding methods to SEPL context", e);
+        throw new RuntimeException(e);
+      }
+      context.setVariables(systemTokens);
+      context.setVariable("tag", userTokens);
+      context.setVariable("records", recordCollection);
+      
+      List<NamingRule> rules = getRuleConfig();
+      
+      boolean ruleMatched = false;
+      
+      int numRule = 0;
+      for (NamingRule rule: rules) {
+        Expression filterExp = getParsedExpression(rule.getFilter(), false);
+        if (filterExp.getValue(context, Boolean.class)) {
+          incrementCounter("RULE_" + numRule + "_MATCHED", 1);
+          String regJobName = recordCollection.getKey().getAppId();
+          if (rule.getReplace() != null) {
+            int numReplaceRule = 0;
+            for (ReplaceRule replaceRule : rule.getReplace()) {
+              Pattern replacePattern = Pattern.compile(replaceRule.getRegex());
+              if (replacePattern.matcher(recordCollection.getKey().getAppId()).matches()) {
+                  incrementCounter("RULE_" + numRule + "_REPLACE_" + numReplaceRule + "_MATCHED", 1);
+                  regJobName = replacePattern.matcher(recordCollection.getKey().getAppId()).replaceAll(replaceRule.getWith());
+                  break;
+              }
+              numReplaceRule++;
+            }
+          }
+          context.setVariable("regJobName", regJobName);
+          
+          Expression nameExp = getParsedExpression(rule.getName(), true);
+          metricsPath = nameExp.getValue(context, String.class);
+          ruleMatched = true;
+          break;
+        }
+        numRule++;
+      }
+      
+      if (!ruleMatched) {
+        incrementCounter("NO_RULE_MATCHED", 1);
+        Expression exp = getParsedExpression(defaultRule, true);
+        metricsPath = exp.getValue(context, String.class);
+        LOG.warn("Defaulting to default metric path naming rule for app " + recordCollection.getKey().toString());
+      }
+      
+      return metricsPath;
+  }
+  
+  private void incrementCounter(Counters counter) {
+    incrementCounter(counter, 1);
+  }
+  
+  private void incrementCounter(Counters counter, int count) {
+    HadoopCompat.incrementCounter(
+      taskContext.getCounter(Counters.GRAPHITE_SINK.toString(), counter.toString()), count);
+  }
+  
+  private void incrementCounter(String counter, int count) {
+    HadoopCompat.incrementCounter(
+      taskContext.getCounter(Counters.GRAPHITE_SINK.toString(), counter), count);
+  }
+  
   public int write() throws IOException {
     /*
-     * Send metrics in the format {PREFIX}.{cluster}.{user}.{appId}.{subAppId} {value}
-     * {submit_time} subAppId is formed differently for each framework. For pig, its the alias
-     * names and feature used in the job. appId will be parsed with a bunch of known patterns
-     * (oozie launcher jobs, pig jobs, etc.)
+     * Send metrics in the format {PREFIX}.{metricsPath} {value} {submit_time}
+     * {metricsPath} is formed using a rule based tokenized format
      */
 
     int lineCount = 0;
     
-    boolean inDoNotExcludeApps = false;
-    
-    if (doNotExcludeApps != null) {
-      for (String appStr: this.doNotExcludeApps) {
-        if (recordCollection.getKey().getAppId().indexOf(appStr) != -1) {
-          inDoNotExcludeApps = true;
-          break;
-        }
-      }  
-    }
-    
-    if ( 
-        // exclude from further filters if appId matches list of doNotExcludeApps substrings
-        inDoNotExcludeApps ||
-        
-        // or it must pass the user and queue filters, if not null 
-        ( (userFilter == null || userFilter.contains(recordCollection.getKey().getUserName())) &&
-         (queueFilter == null || queueFilter.contains(recordCollection.getValue(RecordCategory.CONF_META,
-                                                                           new RecordDataKey(Constants.HRAVEN_QUEUE)))) )
-      ) {
+    if (filterApp()) {
+      incrementCounter(Counters.APPS_FILTERED_IN);
       
-      Framework framework = getFramework(recordCollection);
-      String metricsPathPrefix;
-
-      String pigAliasFp = getPigAliasFingerprint(recordCollection);
-      String genAppId = genAppId(recordCollection, recordCollection.getKey().getAppId());
-      
-      if (genAppId == null) {
-        genAppId = recordCollection.getKey().getAppId();
-        LOG.error("Generated appId is null for app " + recordCollection.getKey().toString());
-      }
-      
-      if (framework == Framework.PIG && pigAliasFp != null) {
-        // TODO: should ideally include app version too, but PIG-2587's pig.logical.plan.signature
-        // which hraven uses was available only from pig 0.11
-        
-        metricsPathPrefix =
-            generatePathPrefix(prefix,
-                              recordCollection.getKey().getCluster(),
-                              recordCollection.getKey().getUserName(),
-                              genAppId,
-                              pigAliasFp)
-                              .toString();
-      } else {
-        metricsPathPrefix =
-            generatePathPrefix(prefix,
-                              recordCollection.getKey().getCluster(),
-                              recordCollection.getKey().getUserName(),
-                              genAppId)
-                              .toString();
-      }
+      String metricsPath = prefix + "." + getMetricsPath();
       
       try {
-        storeAppIdMapping(metricsPathPrefix);
+        storeAppIdMapping(metricsPath);
       } catch (IOException e) {
         LOG.error("Failed to store mapping for app " + recordCollection.getKey().getAppId()
-            + " to '" + metricsPathPrefix + "'");
+            + " to '" + metricsPath + "'");
       }
 
       // Round the timestamp to second as Graphite accepts it in such
@@ -175,13 +369,14 @@ public class GraphiteHistoryWriter {
                 .get(0).equalsIgnoreCase(finishTimeKey))) {
 
           StringBuilder line = new StringBuilder();
-          line.append(metricsPathPrefix);
+          line.append(metricsPath);
 
           boolean ignoreRecord = false;
           for (String comp : jobRecord.getDataKey().getComponents()) {
             if (excludedComponents != null && excludedComponents.contains(comp)) {
               ignoreRecord = true;
               LOG.info("Excluding component '" + jobRecord.getDataKey().toString() + "' of app " + jobRecord.getKey().toString());
+              incrementCounter(Counters.APP_EXCLUDED_COMPS);
               break;
             }
             line.append(".").append(sanitize(comp));
@@ -207,16 +402,19 @@ public class GraphiteHistoryWriter {
         launchTime = (Long)recordCollection.getValue(RecordCategory.HISTORY_COUNTER, new RecordDataKey(launchTimeKey.toLowerCase()));
       
       if (finishTime != null && recordCollection.getSubmitTime() != null) {
-        lines.append(metricsPathPrefix + ".").append(totalTimeKey + " " + (finishTime-recordCollection.getSubmitTime()) + " " + timestamp + "\n");
+        lines.append(metricsPath + ".").append(totalTimeKey + " " + (finishTime-recordCollection.getSubmitTime()) + " " + timestamp + "\n");
         lineCount++;
       }
       
       if (finishTime != null && launchTime != null) {
-        lines.append(metricsPathPrefix + ".").append(runTimeKey + " " + (finishTime-launchTime) + " " + timestamp + "\n");
+        lines.append(metricsPath + ".").append(runTimeKey + " " + (finishTime-launchTime) + " " + timestamp + "\n");
         lineCount++;
       }
+    } else {
+      incrementCounter(Counters.APPS_FILTERED_OUT);
     }
     
+    incrementCounter(Counters.METRICS_WRITTEN, lineCount);
     return lineCount;
   }
 
@@ -236,20 +434,17 @@ public class GraphiteHistoryWriter {
     reverseKeyMappingTable.put(put);
   }
 
-  private String getPigAliasFingerprint(JobHistoryRecordCollection recordCollection) {
-    Object aliasRec = recordCollection.getValue(RecordCategory.CONF, new RecordDataKey("pig.alias"));
-    Object featureRec = recordCollection.getValue(RecordCategory.CONF, new RecordDataKey("pig.job.feature"));
-
-    String alias = null;
-    String feature = null;
-
-    if (aliasRec != null) {
-      alias = (String) aliasRec;
-    }
-
-    if (featureRec != null) {
-      feature = (String) featureRec;
-    }
+  private String getPigAlias() {
+    return (String) recordCollection.getValue(RecordCategory.CONF, new RecordDataKey("pig.alias"));
+  }
+  
+  private String getPigFeature() {
+    return (String) recordCollection.getValue(RecordCategory.CONF, new RecordDataKey("pig.job.feature"));
+  }
+  
+  private String getPigAliasFingerprint() {
+    String alias = getPigAlias();
+    String feature = getPigFeature();
 
     if (alias != null) {
       return (feature != null ? feature + ":" : "")
@@ -259,28 +454,7 @@ public class GraphiteHistoryWriter {
     return null;
   }
 
-  private String genAppId(JobHistoryRecordCollection recordCollection, String appId) {
-    String oozieActionName = getOozieActionName(recordCollection);
-
-    if (getFramework(recordCollection) == Framework.PIG && APPID_PATTERN_PIGJOB.matcher(appId).matches()) {
-      // pig:{oozie-action-name}:{pigscript}
-      if (oozieActionName != null) {
-        appId = APPID_PATTERN_PIGJOB.matcher(appId).replaceAll("pig:" + oozieActionName + ":$1");
-      } else {
-        appId = APPID_PATTERN_PIGJOB.matcher(appId).replaceAll("pig:$1");
-      }
-    } else if (APPID_PATTERN_OOZIE_LAUNCHER.matcher(appId).matches()) {
-      // ozl:{oozie-workflow-name}
-      appId = APPID_PATTERN_OOZIE_LAUNCHER.matcher(appId).replaceAll("ozl:$1:$2:$3");
-    } else if (APPID_PATTERN_OOZIE_ACTION.matcher(appId).matches()) {
-      // oza:{oozie-workflow-name}:{oozie-action-name}
-      appId = APPID_PATTERN_OOZIE_ACTION.matcher(appId).replaceAll("oza:$1:$2:$3:$4");
-    }
-
-    return appId;
-  }
-
-  private Framework getFramework(JobHistoryRecordCollection recordCollection) {
+  private Framework getFramework() {
     Object rec =
         recordCollection.getValue(RecordCategory.CONF_META, new RecordDataKey(Constants.FRAMEWORK_COLUMN));
 
@@ -290,8 +464,24 @@ public class GraphiteHistoryWriter {
 
     return null;
   }
+  
+  private String getVersion() {
+    return (String) recordCollection.getValue(RecordCategory.CONF_META, new RecordDataKey(Constants.VERSION_COLUMN));
+  }
+  
+  private String getQueue() {
+    return (String)recordCollection.getValue(RecordCategory.CONF_META, new RecordDataKey(Constants.HRAVEN_QUEUE));
+  }
+  
+  private String getJobStatus() {
+    return (String)recordCollection.getValue(RecordCategory.HISTORY_META, new RecordDataKey(JobHistoryKeys.JOB_STATUS.toString()));
+  }
+  
+  private String getJobPriority() {
+    return (String)recordCollection.getValue(RecordCategory.HISTORY_META, new RecordDataKey(JobHistoryKeys.JOB_PRIORITY.toString()));
+  }
 
-  private String getOozieActionName(JobHistoryRecordCollection recordCollection) {
+  private String getOozieActionName() {
     Object rec = recordCollection.getValue(RecordCategory.CONF, new RecordDataKey("oozie.action.id"));
 
     if (rec != null) {
@@ -301,6 +491,22 @@ public class GraphiteHistoryWriter {
 
     return null;
   }
+  
+  private String getOozieLauncherPattern() {
+    String appId = recordCollection.getKey().getAppId();
+    if (APPID_PATTERN_OOZIE_LAUNCHER.matcher(appId).matches()) {
+      return APPID_PATTERN_OOZIE_LAUNCHER.matcher(appId).replaceAll("ozl:$1:$2:$3");
+    }
+    return null;
+  }
+  
+  private String getOozieActionPattern() {
+    String appId = recordCollection.getKey().getAppId();
+    if (APPID_PATTERN_OOZIE_ACTION.matcher(appId).matches()) {
+      return APPID_PATTERN_OOZIE_ACTION.matcher(appId).replaceAll("oza:$1:$2:$3:$4");
+    }
+    return null;
+  }
 
   /**
    * Util method to generate metrix path prefix
@@ -308,14 +514,13 @@ public class GraphiteHistoryWriter {
    * @throws UnsupportedEncodingException
    */
 
-  private StringBuilder generatePathPrefix(String... args) {
+  public static StringBuilder getDotPath(String... args) {
     StringBuilder prefix = new StringBuilder();
     boolean first = true;
     for (String arg : args) {
       if (!first) {
         prefix.append(".");
       }
-
       prefix.append(sanitize(arg));
       first = false;
     }
@@ -327,9 +532,14 @@ public class GraphiteHistoryWriter {
    * @throws UnsupportedEncodingException
    */
   public static String sanitize(String s) {
+    s = StringUtils.isEmpty(s) ? "#null" : s;
     return s.replaceAll(GRAPHITE_KEY_FILTER, "_");
   }
 
+  public static String getJobConfProp(JobHistoryRecordCollection recordCollection, String key) {
+    return (String)recordCollection.getValue(RecordCategory.CONF, new RecordDataKey(key));
+  }
+  
   /**
    * Output the {@link JobHistoryRecord} received in debug log
    * @param serviceKey

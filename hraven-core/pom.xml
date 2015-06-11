@@ -21,12 +21,10 @@
   <parent>
     <groupId>com.twitter.hraven</groupId>
     <artifactId>hraven</artifactId>
-    <version>0.9.16-SNAPSHOT</version>
+    <version>0.9.16.inmobi-r31-SNAPSHOT</version>
     <relativePath>../</relativePath>
   </parent>
-  <groupId>com.twitter.hraven</groupId>
   <artifactId>hraven-core</artifactId>
-  <version>0.9.16-SNAPSHOT</version>
   <name>hRaven - core</name>
   <description>Core components of hRaven, including model classes and data access layer</description>
  
@@ -80,22 +78,6 @@
                 </fileset>
               </filesets>
             </configuration>
-        </plugin>
-        <plugin>
-          <artifactId>maven-dependency-plugin</artifactId>
-          <version>2.4</version>
-          <executions>
-            <execution>
-              <id>copy-dependencies</id>
-              <phase>package</phase>
-              <goals>
-                <goal>copy-dependencies</goal>
-              </goals>
-              <configuration>
-                <!-- configure the plugin here -->
-              </configuration>
-            </execution>
-          </executions>
         </plugin>
        <plugin>
          <groupId>org.apache.maven.plugins</groupId>
@@ -158,6 +140,22 @@
           <skipAssembly>true</skipAssembly>
         </configuration>
       </plugin>
+        <plugin>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <version>2.4</version>
+          <executions>
+            <execution>
+              <id>copy-dependencies</id>
+              <phase>package</phase>
+              <goals>
+                <goal>copy-dependencies</goal>
+              </goals>
+              <configuration>
+                <outputDirectory>${project.build.directory}/dependency</outputDirectory>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
     </plugins>
   </build>
 
@@ -251,66 +249,6 @@
       </exclusions>
     </dependency>
 
-    <dependency>
-       <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-core</artifactId>
-      <version>${hadoop.version}</version>
-      <scope>provided</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>hsqldb</groupId>
-          <artifactId>hsqldb</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>net.sf.kosmosfs</groupId>
-          <artifactId>kfs</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.eclipse.jdt</groupId>
-          <artifactId>core</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>net.java.dev.jets3t</groupId>
-          <artifactId>jets3t</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>oro</groupId>
-          <artifactId>oro</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency> 
-    <dependency>
-      <groupId>org.apache.hbase</groupId>
-      <artifactId>hbase</artifactId>
-      <version>${hbase.version}</version>
-      <exclusions>
-        <exclusion>
-          <groupId>org.apache.thrift</groupId>
-          <artifactId>thrift</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.mortbay.jetty</groupId>
-          <artifactId>jetty</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.mortbay.jetty</groupId>
-          <artifactId>jetty-util</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.mortbay.jetty</groupId>
-          <artifactId>jsp-2.1</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.mortbay.jetty</groupId>
-          <artifactId>jsp-api-2.1</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.mortbay.jetty</groupId>
-          <artifactId>servlet-api-2.5</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-
     <!-- REST API third party dependencies -->
     <dependency>
       <groupId>com.sun.jersey</groupId>
@@ -365,26 +303,6 @@
 
     <!-- Test dependencies -->
     <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-test</artifactId>
-      <version>${hadoop.version}</version>
-      <scope>test</scope>
-    </dependency>
-    
-    <dependency>
-      <groupId>org.apache.hbase</groupId>
-      <artifactId>hbase</artifactId>
-      <version>${hbase.version}</version>
-      <classifier>tests</classifier>
-      <scope>test</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>org.apache.thrift</groupId>
-          <artifactId>thrift</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>${junit.version}</version>
@@ -421,6 +339,280 @@
       <properties>
         <build.platform>Mac_OS_X-${sun.arch.data.model}</build.platform>
       </properties>
+    </profile>
+    <profile>
+        <id>cdh3</id>
+        <dependencies>
+          <dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase</artifactId>
+            <version>${hbase.version}</version>
+            <exclusions>
+              <exclusion>
+                <groupId>org.apache.thrift</groupId>
+                <artifactId>thrift</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>org.mortbay.jetty</groupId>
+                <artifactId>jetty</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>org.mortbay.jetty</groupId>
+                <artifactId>jetty-util</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>org.mortbay.jetty</groupId>
+                <artifactId>jsp-2.1</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>org.mortbay.jetty</groupId>
+                <artifactId>jsp-api-2.1</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>org.mortbay.jetty</groupId>
+                <artifactId>servlet-api-2.5</artifactId>
+              </exclusion>
+            </exclusions>
+          </dependency>
+          <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-test</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>test</scope>
+          </dependency>
+          <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-core</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>provided</scope>
+            <exclusions>
+              <exclusion>
+                <groupId>hsqldb</groupId>
+                <artifactId>hsqldb</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>net.sf.kosmosfs</groupId>
+                <artifactId>kfs</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>org.eclipse.jdt</groupId>
+                <artifactId>core</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>net.java.dev.jets3t</groupId>
+                <artifactId>jets3t</artifactId>
+              </exclusion>
+              <exclusion>
+                <groupId>oro</groupId>
+                <artifactId>oro</artifactId>
+              </exclusion>
+              </exclusions>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hbase</groupId>
+              <artifactId>hbase</artifactId>
+              <version>${hbase.version}</version>
+              <classifier>tests</classifier>
+              <scope>test</scope>
+              <exclusions>
+                <exclusion>
+                  <groupId>org.apache.thrift</groupId>
+                  <artifactId>thrift</artifactId>
+                </exclusion>
+              </exclusions>
+            </dependency>
+        </dependencies>
+    </profile>
+    <profile>
+        <id>cdh4</id>
+        <dependencies>
+            <dependency>
+              <groupId>org.apache.hbase</groupId>
+              <artifactId>hbase</artifactId>
+              <version>${hbase.version}</version>
+              <exclusions>
+                <exclusion>
+                  <groupId>org.apache.thrift</groupId>
+                  <artifactId>thrift</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jetty</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jetty-util</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jsp-2.1</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jsp-api-2.1</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>servlet-api-2.5</artifactId>
+                </exclusion>
+              </exclusions>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>hadoop-common</artifactId>
+              <version>${hadoop.version}</version>
+              <scope>compile</scope>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>hadoop-test</artifactId>
+              <version>${hadoop.core.version}</version>
+              <scope>test</scope>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>hadoop-core</artifactId>
+              <version>${hadoop.core.version}</version>
+              <scope>compile</scope>
+              <exclusions>
+                <exclusion>
+                  <groupId>hsqldb</groupId>
+                  <artifactId>hsqldb</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>net.sf.kosmosfs</groupId>
+                  <artifactId>kfs</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.eclipse.jdt</groupId>
+                  <artifactId>core</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>net.java.dev.jets3t</groupId>
+                  <artifactId>jets3t</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>oro</groupId>
+                  <artifactId>oro</artifactId>
+                </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hbase</groupId>
+              <artifactId>hbase</artifactId>
+              <version>${hbase.version}</version>
+              <classifier>tests</classifier>
+              <scope>test</scope>
+              <exclusions>
+                <exclusion>
+                  <groupId>org.apache.thrift</groupId>
+                  <artifactId>thrift</artifactId>
+                </exclusion>
+              </exclusions>
+            </dependency>
+        </dependencies>
+    </profile>
+    <profile>
+        <id>hdp</id>
+        <dependencies>
+            <dependency>
+              <groupId>org.apache.hbase</groupId>
+              <artifactId>hbase-client</artifactId>
+              <version>${hbase.version}</version>
+              <exclusions>
+                <exclusion>
+                  <groupId>org.apache.thrift</groupId>
+                  <artifactId>thrift</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jetty</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jetty-util</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jsp-2.1</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>jsp-api-2.1</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.mortbay.jetty</groupId>
+                  <artifactId>servlet-api-2.5</artifactId>
+                </exclusion>
+              </exclusions>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>hadoop-common</artifactId>
+              <version>${hadoop.version}</version>
+              <scope>compile</scope>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>hadoop-test</artifactId>
+              <version>${hadoop.core.version}</version>
+              <scope>test</scope>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hadoop</groupId>
+              <artifactId>hadoop-client</artifactId>
+              <version>${hadoop.core.version}</version>
+              <scope>compile</scope>
+              <exclusions>
+                <exclusion>
+                  <groupId>hsqldb</groupId>
+                  <artifactId>hsqldb</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>net.sf.kosmosfs</groupId>
+                  <artifactId>kfs</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>org.eclipse.jdt</groupId>
+                  <artifactId>core</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>net.java.dev.jets3t</groupId>
+                  <artifactId>jets3t</artifactId>
+                </exclusion>
+                <exclusion>
+                  <groupId>oro</groupId>
+                  <artifactId>oro</artifactId>
+                </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.hbase</groupId>
+                <artifactId>hbase-testing-util</artifactId>
+                <version>${hbase.version}</version>
+                <classifier>tests</classifier>
+                <scope>test</scope>
+                <exclusions>
+                    <exclusion>
+                        <groupId>org.apache.thrift</groupId>
+                        <artifactId>thrift</artifactId>
+                    </exclusion>
+                </exclusions>
+            </dependency>
+            <dependency>
+              <groupId>org.apache.hbase</groupId>
+              <artifactId>hbase-client</artifactId>
+              <version>${hbase.version}</version>
+              <classifier>tests</classifier>
+              <scope>test</scope>
+              <exclusions>
+                <exclusion>
+                  <groupId>org.apache.thrift</groupId>
+                  <artifactId>thrift</artifactId>
+                </exclusion>
+              </exclusions>
+            </dependency>
+        </dependencies>
     </profile>
   </profiles>
 

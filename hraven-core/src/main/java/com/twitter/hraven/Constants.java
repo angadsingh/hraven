@@ -447,7 +447,9 @@ public class Constants {
   public static final String JOBCONF_GRAPHITE_USER_FILTER = "hraven.sink.graphite.userfilter";
   public static final String JOBCONF_GRAPHITE_QUEUE_FILTER = "hraven.sink.graphite.queuefilter";
   public static final String JOBCONF_GRAPHITE_EXCLUDED_COMPONENTS = "hraven.sink.graphite.excludedcomponents";
-  public static final String JOBCONF_GRAPHITE_DONOTEXCLUDE_APPS = "hraven.sink.graphite.donotexcludeapps";
+  public static final String JOBCONF_GRAPHITE_INCLUDE_APPS = "hraven.sink.graphite.includeapps";
+  public static final String JOBCONF_GRAPHITE_EXCLUDE_APPS = "hraven.sink.graphite.excludeapps";
+  public static final String JOBCONF_GRAPHITE_NAMING_RULE_CONFIG = "hraven.sink.graphite.metric.naming.rules";
   
   public static final int GRAPHITE_DEFAULT_PORT = 2003;
   
@@ -462,4 +464,6 @@ public class Constants {
   public static final String HRAVEN_HDFS_LIB_PATH_CONF = "hraven.conf.libpath";
 
   public static final String HADOOP_TMP_JARS_CONF = "tmpjars";
+
+  public static final String JOBCONF_HRAVEN_METRIC_TAGS = "hraven.metric.tags";
 }
