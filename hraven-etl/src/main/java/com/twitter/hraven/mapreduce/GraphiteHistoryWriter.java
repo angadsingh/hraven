@@ -1,53 +1,33 @@
 package com.twitter.hraven.mapreduce;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.io.Writer;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.*;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hadoop.mapreduce.TaskInputOutputContext;
-import org.codehaus.jackson.JsonParseException;
-import org.codehaus.jackson.map.JsonMappingException;
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.type.TypeReference;
 import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.common.TemplateParserContext;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 
-import com.twitter.hraven.Constants;
-import com.twitter.hraven.Framework;
-import com.twitter.hraven.HravenService;
-import com.twitter.hraven.JobHistoryKeys;
-import com.twitter.hraven.JobHistoryRecordCollection;
-import com.twitter.hraven.JobHistoryRecord;
-import com.twitter.hraven.JobKey;
-import com.twitter.hraven.RecordCategory;
-import com.twitter.hraven.RecordDataKey;
+import com.twitter.hraven.*;
 import com.twitter.hraven.datasource.JobKeyConverter;
 import com.twitter.hraven.util.ByteUtil;
 
 public class GraphiteHistoryWriter {
 
   private static Log LOG = LogFactory.getLog(GraphiteHistoryWriter.class);
-
-  private static List<NamingRule> RULE_CONFIG;
 
   private final Pattern APPID_PATTERN_OOZIE_LAUNCHER = Pattern.compile(".*oozie:launcher:T=(.*):W=(.*):A=(.*):ID=(.*)");
   private final Pattern APPID_PATTERN_OOZIE_ACTION = Pattern.compile(".*oozie:action:T=(.*):W=(.*):A=(.*):ID=[0-9]{7}-[0-9]{15}-oozie-oozi-W(.*)");
@@ -62,20 +42,21 @@ public class GraphiteHistoryWriter {
 
   private HravenService service;
   private JobHistoryRecordCollection recordCollection;
-  private String prefix;
-  private StringBuilder lines;
+  
+  private HTable keyMappingTable;
+  private HTable reverseKeyMappingTable;
+  private TaskAttemptContext taskContext;
+  private GraphiteSinkConf sinkConfig;
+  private Writer socketWriter;
+  StandardEvaluationContext expressionEvalContext = new StandardEvaluationContext();
+
   private List<String> userFilter;
   private List<String> queueFilter;
   private List<String> excludedComponents;
   private List<String> appInclusionFilter;
   private List<String> appExclusionFilter;
-  
-  private HTable keyMappingTable;
-  private HTable reverseKeyMappingTable;
+  private Map<String, String> userTokens;
 
-  private String metricNamingRuleFile;
-
-  private TaskAttemptContext taskContext;
   
   public enum Counters {
     GRAPHITE_SINK,
@@ -83,7 +64,7 @@ public class GraphiteHistoryWriter {
     APPS_FILTERED_OUT,
     APP_EXCLUDED_COMPS,
     METRICS_WRITTEN
-  };
+  }
 
   /**
    * Writes a single {@link JobHistoryRecord} to the specified {@link HravenService} Passes the
@@ -99,26 +80,30 @@ public class GraphiteHistoryWriter {
    * @throws InterruptedException
    */
 
-  public GraphiteHistoryWriter(TaskAttemptContext context, HTable keyMappingTable, HTable reverseKeyMappingTable, String prefix, HravenService serviceKey,
-      JobHistoryRecordCollection recordCollection, StringBuilder sb, String userFilter, String queueFilter, String excludedComponents, String appInclusionFilter, String appExclusionFilter, String metricNamingRuleFile) {
+  public GraphiteHistoryWriter(TaskAttemptContext context, HTable keyMappingTable, HTable reverseKeyMappingTable, HravenService serviceKey,
+      JobHistoryRecordCollection recordCollection, GraphiteSinkConf sinkConfig, Writer socketWriter) {
     this.taskContext = context;
     this.keyMappingTable = keyMappingTable;
     this.reverseKeyMappingTable = reverseKeyMappingTable;
     this.service = serviceKey;
     this.recordCollection = recordCollection;
-    this.prefix = prefix;
-    this.lines = sb;
-    if (StringUtils.isNotEmpty(userFilter))
-      this.userFilter = Arrays.asList(userFilter.split(","));
-    if (StringUtils.isNotEmpty(queueFilter))
-      this.queueFilter = Arrays.asList(queueFilter.split(","));
-    if (StringUtils.isNotEmpty(excludedComponents))
-      this.excludedComponents = Arrays.asList(excludedComponents.split(","));
-    if (StringUtils.isNotEmpty(appInclusionFilter))
-      this.appInclusionFilter = Arrays.asList(appInclusionFilter.split(","));
-    if (StringUtils.isNotEmpty(appExclusionFilter))
-      this.appExclusionFilter = Arrays.asList(appExclusionFilter.split(","));
-    this.metricNamingRuleFile = metricNamingRuleFile;
+    this.sinkConfig = sinkConfig;
+    this.socketWriter = socketWriter;
+    this.userTokens = getUserTags();
+    this.expressionEvalContext = getExpressionEvalContext();
+    
+    LOG.info("Working with metric rule file: " + sinkConfig.getMetricNamingRules().toString());
+    
+    if (StringUtils.isNotEmpty(sinkConfig.getUserfilter()))
+      this.userFilter = Arrays.asList(sinkConfig.getUserfilter().split(","));
+    if (StringUtils.isNotEmpty(sinkConfig.getQueuefilter()))
+      this.queueFilter = Arrays.asList(sinkConfig.getQueuefilter().split(","));
+    if (StringUtils.isNotEmpty(sinkConfig.getExcludedComponents()))
+      this.excludedComponents = Arrays.asList(sinkConfig.getExcludedComponents().split(","));
+    if (StringUtils.isNotEmpty(sinkConfig.getIncludeApps()))
+      this.appInclusionFilter = Arrays.asList(sinkConfig.getIncludeApps().split(","));
+    if (StringUtils.isNotEmpty(sinkConfig.getExcludeApps()))
+      this.appExclusionFilter = Arrays.asList(sinkConfig.getExcludeApps().split(","));
   }
 
   private boolean isAppExcluded(String appId) {
@@ -198,52 +183,10 @@ public class GraphiteHistoryWriter {
     return userTags;
   }
   
-  private List<NamingRule> getRuleConfig () throws IOException {
-    if (GraphiteHistoryWriter.RULE_CONFIG == null) {
-      String configStr = readFsFile(metricNamingRuleFile, new Configuration());
-      GraphiteHistoryWriter.RULE_CONFIG = parseRuleConfig(configStr);
-      LOG.info("Working with metric rule file: " + GraphiteHistoryWriter.RULE_CONFIG);
-    }
-    
-    return GraphiteHistoryWriter.RULE_CONFIG;
-  }
-  
-  public static String readFsFile(String fsFile, Configuration conf) throws IOException {
-    Path path = new Path(fsFile);
-    FileSystem fs = null;
-    fs = path.getFileSystem(conf);
-    BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(path)));
-    StringBuilder everything = new StringBuilder();
-    String line;
-    while( (line = br.readLine()) != null) {
-       everything.append(line);
-    }
-    return everything.toString();
-  }
-  
-  public List<NamingRule> parseRuleConfig(String configStr) throws IOException {
-    ObjectMapper mapper = new ObjectMapper();
-    
-    List<NamingRule> ruleConfig = null;
-    try {
-        ruleConfig = mapper.readValue(configStr,
-                new TypeReference<List<NamingRule>>() {});
-    } catch (JsonParseException e) {
-        LOG.error("JsonParseException while parsing: " + configStr);
-        throw new IOException("JsonParseException while parsing: " + configStr, e);
-    } catch (JsonMappingException e) {
-        LOG.error("JsonMappingException while parsing: " + configStr);
-        throw new IOException("JsonMappingException while parsing: " + configStr, e);
-    } catch (IOException e) {
-        LOG.error("IOException while parsing: " + configStr);
-        throw new IOException("IOException while parsing: " + configStr, e);
-    }
-    return ruleConfig;
-  }
-  
   private Expression getParsedExpression(String exp, boolean template) {
     exp = exp.replaceAll("#conf\\((.*)\\)", "#conf(#records,$1)");
-    exp = exp.replaceAll("#\\{([^.]*)\\}", "#{#sanitize($1)}");
+    exp = exp.replaceAll("#\\{([^.:]*)\\}", "#{#sanitize($1)}");
+    exp = exp.replaceAll("#submitTime", "#submitTime(#records)");
     
     ExpressionParser parser = new SpelExpressionParser();
     
@@ -254,19 +197,16 @@ public class GraphiteHistoryWriter {
     }
   }
 
-  private String getMetricsPath() throws IOException {
-      String metricsPath = null;
-      
-      String defaultRule = "c:#{#cluster}.q:#{#queue}.u:#{#user}.all.s:#{#status}.j:#{#jobName}";
-      
-      StandardEvaluationContext context = new StandardEvaluationContext();
+  private StandardEvaluationContext getExpressionEvalContext() {
       Map<String, Object> systemTokens = getSystemTokens();
-      Map<String, String> userTokens = getUserTags();
-      
+      StandardEvaluationContext context = new StandardEvaluationContext();
       try {
         context.registerFunction("path", GraphiteHistoryWriter.class.getDeclaredMethod("getDotPath", String[].class));
         context.registerFunction("sanitize", GraphiteHistoryWriter.class.getDeclaredMethod("sanitize",String.class));
-        context.registerFunction("conf", GraphiteHistoryWriter.class.getDeclaredMethod("getJobConfProp", new Class[] {JobHistoryRecordCollection.class, String.class}));
+          context.registerFunction("conf", GraphiteHistoryWriter.class.getDeclaredMethod("getJobConfProp", new Class[] {JobHistoryRecordCollection.class,
+                                                                                                                        String.class}));
+          context.registerFunction("dateToEpoch", GraphiteHistoryWriter.class.getDeclaredMethod("dateToEpoch", String.class));
+          context.registerFunction("submitTime", GraphiteHistoryWriter.class.getDeclaredMethod("submitTime",JobHistoryRecordCollection.class));
       } catch (SecurityException e) {
         LOG.error("SecurityException while adding methods to SEPL context", e);
         throw new RuntimeException(e);
@@ -278,14 +218,20 @@ public class GraphiteHistoryWriter {
       context.setVariable("tag", userTokens);
       context.setVariable("records", recordCollection);
       
-      List<NamingRule> rules = getRuleConfig();
+      return context;
+  }
+
+  private String getMetricsPath() throws IOException {
+      String metricsPath = null;
+      
+      String defaultRule = "c:#{#cluster}.q:#{#queue}.u:#{#user}.all.s:#{#status}.j:#{#jobName}";
       
       boolean ruleMatched = false;
       
       int numRule = 0;
-      for (NamingRule rule: rules) {
+      for (NamingRule rule: sinkConfig.getMetricNamingRules()) {
         Expression filterExp = getParsedExpression(rule.getFilter(), false);
-        if (filterExp.getValue(context, Boolean.class)) {
+        if (filterExp.getValue(expressionEvalContext, Boolean.class)) {
           incrementCounter("RULE_" + numRule + "_MATCHED", 1);
           String regJobName = recordCollection.getKey().getAppId();
           if (rule.getReplace() != null) {
@@ -300,10 +246,10 @@ public class GraphiteHistoryWriter {
               numReplaceRule++;
             }
           }
-          context.setVariable("regJobName", regJobName);
+        expressionEvalContext.setVariable("regJobName", regJobName);
           
           Expression nameExp = getParsedExpression(rule.getName(), true);
-          metricsPath = nameExp.getValue(context, String.class);
+          metricsPath = nameExp.getValue(expressionEvalContext, String.class);
           ruleMatched = true;
           break;
         }
@@ -312,9 +258,6 @@ public class GraphiteHistoryWriter {
       
       if (!ruleMatched) {
         incrementCounter("NO_RULE_MATCHED", 1);
-        Expression exp = getParsedExpression(defaultRule, true);
-        metricsPath = exp.getValue(context, String.class);
-        LOG.warn("Defaulting to default metric path naming rule for app " + recordCollection.getKey().toString());
       }
       
       return metricsPath;
@@ -326,15 +269,15 @@ public class GraphiteHistoryWriter {
   
   private void incrementCounter(Counters counter, int count) {
     HadoopCompat.incrementCounter(
-      taskContext.getCounter(Counters.GRAPHITE_SINK.toString(), counter.toString()), count);
+      taskContext.getCounter(sinkConfig.getName() + "_" + Counters.GRAPHITE_SINK.toString(), counter.toString()), count);
   }
   
   private void incrementCounter(String counter, int count) {
     HadoopCompat.incrementCounter(
-      taskContext.getCounter(Counters.GRAPHITE_SINK.toString(), counter), count);
+      taskContext.getCounter(sinkConfig.getName() + "_" + Counters.GRAPHITE_SINK.toString(), counter), count);
   }
   
-  public int write() throws IOException {
+  public void write() throws IOException {
     /*
      * Send metrics in the format {PREFIX}.{metricsPath} {value} {submit_time}
      * {metricsPath} is formed using a rule based tokenized format
@@ -342,11 +285,15 @@ public class GraphiteHistoryWriter {
 
     int lineCount = 0;
     
-    if (filterApp()) {
+    StringBuilder lines = new StringBuilder();
+    String metricsPath = sinkConfig.getGraphitePrefix() + "." + getMetricsPath();
+
+    if (filterApp() && metricsPath != null) {
       incrementCounter(Counters.APPS_FILTERED_IN);
       
-      String metricsPath = prefix + "." + getMetricsPath();
+      String metricsPath = sinkConfig.getGraphitePrefix() + "." + getMetricsPath();
       
+      LOG.info("Sending metrics for: "+ metricsPath);
       try {
         storeAppIdMapping(metricsPath);
       } catch (IOException e) {
@@ -356,7 +303,7 @@ public class GraphiteHistoryWriter {
 
       // Round the timestamp to second as Graphite accepts it in such
       // a format.
-      int timestamp = Math.round(recordCollection.getSubmitTime() / 1000);
+      int timestamp = getTimeStamp();
       
       // For now, relies on receiving job history and job conf as part of the same
       // JobHistoryMultiRecord
@@ -389,7 +336,7 @@ public class GraphiteHistoryWriter {
 
           line.append(" ").append(jobRecord.getDataValue()).append(" ")
               .append(timestamp).append("\n");
-          lines.append(line);
+          lines .append(line);
         }
       }
       
@@ -410,13 +357,42 @@ public class GraphiteHistoryWriter {
         lines.append(metricsPath + ".").append(runTimeKey + " " + (finishTime-launchTime) + " " + timestamp + "\n");
         lineCount++;
       }
+
+      incrementCounter(Counters.METRICS_WRITTEN, lineCount);
+    
+      LOG.info("SendToGraphite: " + recordCollection.getKey().toString() + " : " + lines + " metrics"  + "(config: " + sinkConfig.getName() + ")");
+      socketWriter.write(lines.toString());
     } else {
       incrementCounter(Counters.APPS_FILTERED_OUT);
     }
-    
-    incrementCounter(Counters.METRICS_WRITTEN, lineCount);
-    return lineCount;
   }
+
+    private int getTimeStamp() {
+        Expression timestampExp = getParsedExpression(sinkConfig.getTimestampExpression(), false);
+        LOG.info("filterExp: " + timestampExp.getExpressionString() );
+        LOG.info("userTokens: " + userTokens.toString());
+
+        Long timestamp = timestampExp.getValue(expressionEvalContext, Long.class);
+        if(timestamp != null) {
+            return Math.round(timestamp / 1000);
+        } else {
+            return Math.round(submitTime(recordCollection) / 1000);
+        }
+    }
+
+    private static Long dateToEpoch(String dateString) throws ParseException {
+        SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd-HH-mm");
+        if(dateString != null) {
+            Date date = df.parse(dateString);
+            return date.getTime();
+        } else {
+            return null;
+        }
+    }
+
+    private static Long submitTime(JobHistoryRecordCollection recordCollection){
+        return recordCollection.getSubmitTime();
+    }
 
   private void storeAppIdMapping(String metricsPathPrefix) throws IOException {
     Put put = new Put(new JobKeyConverter().toBytes(recordCollection.getKey()));
