@@ -343,6 +343,7 @@ public class TestJobHistoryService {
 	  String expH2QName = "hadoop2queue";
 	  String expH1PoolName = "fairpool";
 	  String capacityH1QName = "capacity1aueue";
+	  String DEFAULT_QUEUE = "DEFAULT_QUEUE";
 	  jobConf.set(Constants.QUEUENAME_HADOOP2, expH2QName);
 	  jobConf.set(Constants.FAIR_SCHEDULER_POOLNAME_HADOOP1, expH1PoolName);
 	  jobConf.set(Constants.CAPACITY_SCHEDULER_QUEUENAME_HADOOP1, capacityH1QName);
@@ -354,7 +355,7 @@ public class TestJobHistoryService {
 	  JobHistoryService.setHravenQueueNameRecord(jobConf, recordCollection, jobKey);
 	  assertEquals(recordCollection.size(), 1);
 	  assertEquals(recordCollection.getValue(RecordCategory.CONF_META, new RecordDataKey(
-				Constants.HRAVEN_QUEUE)), expH2QName);
+				Constants.HRAVEN_QUEUE)), capacityH1QName);
 
 	  // now unset hadoop2 queuename, expect fairscheduler name to be used as queuename
 	  jobConf.set(Constants.QUEUENAME_HADOOP2, "");
@@ -372,7 +373,7 @@ public class TestJobHistoryService {
 	  JobHistoryService.setHravenQueueNameRecord(jobConf, recordCollection, jobKey);
 	  assertEquals(recordCollection.size(), 1);
 	  assertEquals(recordCollection.getValue(RecordCategory.CONF_META, new RecordDataKey(
-				Constants.HRAVEN_QUEUE)), capacityH1QName);
+				Constants.HRAVEN_QUEUE)), DEFAULT_QUEUE);
 
 	  // now unset capacity scheduler, expect default_queue to be used as queuename
 	  jobConf.set(Constants.CAPACITY_SCHEDULER_QUEUENAME_HADOOP1, "");

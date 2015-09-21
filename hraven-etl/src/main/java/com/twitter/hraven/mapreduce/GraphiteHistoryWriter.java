@@ -70,12 +70,16 @@ public class GraphiteHistoryWriter {
    * Writes a single {@link JobHistoryRecord} to the specified {@link HravenService} Passes the
    * large multi record of which this record is a part of, so that we can get other contextual
    * attributes to use in the graphite metric naming scheme
-   * @param graphiteKeyMappingTable 
+   * @param context
+   * @param keyMappingTable
+   * @param reverseKeyMappingTable
    * @param serviceKey
+   * @param recordCollection
    * @param userFilter 
-   * @param doNotExcludeApps 
-   * @param jobRecord
-   * @param multiRecord
+   * @param queueFilter
+   * @param excludedComponents
+   * @param appExclusionFilter
+   * @param metricNamingRuleFile
    * @throws IOException
    * @throws InterruptedException
    */
@@ -290,8 +294,6 @@ public class GraphiteHistoryWriter {
 
     if (filterApp() && metricsPath != null) {
       incrementCounter(Counters.APPS_FILTERED_IN);
-      
-      String metricsPath = sinkConfig.getGraphitePrefix() + "." + getMetricsPath();
       
       LOG.info("Sending metrics for: "+ metricsPath);
       try {

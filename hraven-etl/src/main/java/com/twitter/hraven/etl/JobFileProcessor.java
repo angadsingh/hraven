@@ -54,6 +54,8 @@ import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.mapreduce.MultiTableOutputFormat;
 import org.apache.hadoop.hbase.mapreduce.TableInputFormat;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
+import org.apache.hadoop.hbase.protobuf.ProtobufUtil;
+import org.apache.hadoop.hbase.protobuf.generated.ClientProtos;
 import org.apache.hadoop.hbase.util.Base64;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.util.GenericOptionsParser;
@@ -528,13 +530,8 @@ public class JobFileProcessor extends Configured implements Tool {
   /**
    * @param conf
    *          to be used to connect to HBase
-   * @param cluster
-   *          for which we're finding processRecords.
-   * @param processFileSubstring
-   *          if specified, this string must be part of the processFile path to
-   *          limit which records we want to process.
-   * @return a list of processRecords in {@link ProcessState#LOADED} stqte that
-   *         still need to be processed.
+	 * @return a list of processRecords in {@link ProcessState#LOADED} stqte
+	 *         that still need to be processed.
    * @throws IOException
    */
   private void updateProcessRecords(Configuration conf,
@@ -573,10 +570,6 @@ public class JobFileProcessor extends Configured implements Tool {
    * @param reprocess
    *          Reprocess those records that may have been processed already.
    *          Otherwise successfully processed job files are skipped.
-   * @param reprocessOnly
-   *          process only those raw records that were marked to be reprocessed.
-   *          When true then reprocess argument is ignored and is assumed to be
-   *          true.
    * @param batchSize
    *          the total number of jobs to process in a batch (a MR job scanning
    *          these many records in the raw table).
@@ -632,10 +625,8 @@ public class JobFileProcessor extends Configured implements Tool {
   }
 
   static String convertScanToString(Scan scan) throws IOException {
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
-    DataOutputStream dos = new DataOutputStream(out);
-    scan.write(dos);
-    return Base64.encodeBytes(out.toByteArray());
+		ClientProtos.Scan proto = ProtobufUtil.toScan(scan);
+		return Base64.encodeBytes(proto.toByteArray());
   }
  
   /**

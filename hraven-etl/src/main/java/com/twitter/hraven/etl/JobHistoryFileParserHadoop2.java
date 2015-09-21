@@ -637,7 +637,6 @@ public class JobHistoryFileParserHadoop2 extends JobHistoryFileParserBase {
    * @throws IllegalArgumentException NullPointerException
    */
   private String getKey(String key) throws IllegalArgumentException {
-    String checkKey =
     String checkKey = JobHistoryKeys.HADOOP2_TO_HADOOP1_MAPPING.containsKey(key) ?
         JobHistoryKeys.HADOOP2_TO_HADOOP1_MAPPING.get(key) :
         key;

@@ -16,7 +16,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.twitter.hraven</groupId>
   <artifactId>hraven</artifactId>
-  <version>0.9.16.inmobi-r31-SNAPSHOT</version>
+  <version>0.9.16.0.35.1.inm-SNAPSHOT</version>
   <name>hRaven Project</name>
   <url>https://github.com/twitter/hraven</url>
   <description>
@@ -178,7 +178,7 @@
     <plugins>
       <plugin>
         <artifactId>maven-deploy-plugin</artifactId>
-	<version>2.7</version>
+	      <version>2.7</version>
         <configuration>
           <skip>false</skip>
         </configuration>
@@ -186,7 +186,7 @@
       <plugin>
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
-	<version>0.9</version>
+	      <version>0.9</version>
         <configuration>
         </configuration>
       </plugin> 
@@ -280,8 +280,10 @@
             <hbase.version>0.94.6-cdh4.3.0</hbase.version>
             <hadoop.version>2.0.0-cdh4.3.0</hadoop.version>
             <hadoop.core.version>2.0.0-mr1-cdh4.3.0</hadoop.core.version>
+    	</properties>
+    </profile>
     <profile>
-        <id>hdp</id>
+    	<id>hdp</id>
         <activation>
         	<activeByDefault>true</activeByDefault>
         </activation>
