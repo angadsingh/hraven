@@ -33,8 +33,8 @@ create 'hraven.job_history-by_jobId', {NAME => 'i', COMPRESSION => 'LZO'}
 #   i:  "info" -- version information
 create 'hraven.job_history_app_version', {NAME => 'i', COMPRESSION => 'LZO'}
 
-create 'hraven.job_history_raw', {NAME => 'i', COMPRESSION => 'LZO', BLOOMFILTER => 'ROWCOL'},
-                                {NAME => 'r', VERSIONS => 1, COMPRESSION => 'LZO', BLOCKCACHE => false}
+create 'hraven.job_history_raw', {NAME => 'i', DATA_BLOCK_ENCODING => 'FAST_DIFF', COMPRESSION => 'LZO', BLOOMFILTER => 'ROWCOL', BLOCKCACHE => false, TTL => 15778500, METADATA => {'ENCODE_ON_DISK' => 'true'}},
+								 {NAME => 'r', DATA_BLOCK_ENCODING => 'FAST_DIFF', VERSIONS => 1, COMPRESSION => 'LZO', BLOCKCACHE => false, TTL => 15778500, METADATA => {'ENCODE_ON_DISK' => 'true'}}
 
 # job_history_process - stores metadata about job history data loading process
 #   i:  "info" -- process information
