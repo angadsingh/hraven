@@ -89,10 +89,6 @@
   </developers>
 
  <distributionManagement>
-    <site>
-      <id>pintail-site</id>
-      <url>https://inmobi.github.io/pintail/</url>
-    </site>
     <repository>
       <id>InMobiRepository</id>
       <name>InMobi Repository</name>
